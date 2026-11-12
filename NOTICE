@@ -62,9 +62,15 @@ Material from other projects
    TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
    SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-4. common/ (the C module framework) and test/riscos/emu.py: MIT licence,
+4. Mesa's v3d packet definitions (src/broadcom/cle/v3d_packet.xml, MIT
+   licence, part of Mesa): test/host/v3d_packet.xml is that file,
+   unchanged, used to check the kit's control lists. kit/src/clbuild.c
+   follows Mesa's v3dx_rcl.c and v3dx_draw.c (MIT licence, Copyright (C)
+   2014-2017 Broadcom) for the packets a frame that only clears needs.
+
+5. common/ (the C module framework) and test/riscos/emu.py: MIT licence,
    Copyright (c) 2026 Andrew Youll.
 
-5. RISC OS Open's Programmer's Reference Manual was used for the SWIs
+6. RISC OS Open's Programmer's Reference Manual was used for the SWIs
    (OS_DynamicArea, OS_Memory, OS_ClaimDeviceVector, BCMSupport); nothing
    from it is reproduced.

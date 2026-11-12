@@ -1,79 +1,79 @@
-REM V3DCheck: V3DRender's first test on a Raspberry Pi 4.
-REM It asks the module about the GPU, makes and frees buffers, and checks
-REM that a buffer's memory and its page-table entry are right. It sends no
-REM job to the GPU yet. Results go on the screen and into Results.
-REM SPDX-License-Identifier: GPL-2.0-or-later
-REM Copyright (c) 2026 Andrew Youll
-out%=0
-ON ERROR PRINT REPORT$;" (line ";ERL;")":IF out% THEN BPUT#out%,REPORT$+" (line "+STR$ERL+")":CLOSE#out%:END ELSE END
-dir$=FNdir
-IF dir$="" THEN PRINT "Run V3DCheck with Check (it sets V3DCheck$Dir)":END
-out%=OPENOUT(dir$+".Results")
-fails%=0
-PROCsay("V3DCheck: V3DRender on this machine")
-SYS "OS_Module",18,"V3DRender"
-SYS "V3DRender_Info" TO ver%,v3d%,id1%,hz%,mem%,used%,files%,name%
-PROCsay("V3DRender "+STR$(ver%/100)+", V3D "+STR$(v3d%DIV10)+"."+STR$(v3d%MOD10)+", HUB_IDENT1 &"+STR$~id1%+", clock "+STR$(hz%DIV1000000)+" MHz")
-PROCsay("Buffer memory "+STR$(mem%DIV1048576)+" MB, "+STR$(used%DIV1024)+" KB in use, DRM driver "+FNstr(name%))
-PROCcheck(v3d%=42,"the GPU is a V3D 4.2")
-SYS "V3DRender_Open",0 TO f%
-PROCsay("Opened file "+STR$f%)
-DIM a% 64
-REM GET_PARAM (&C0106444): CORE0_IDENT0 (4), HUB_IDENT1 (1), SUPPORTS_TFU (7), SUPPORTS_CSD (8)
-PROCcheck(FNparam(4)=&04443356,"CORE0_IDENT0 reads ""V3D"" (&04443356)")
-PROCcheck(FNparam(1)=id1%,"HUB_IDENT1 matches")
-PROCcheck(FNparam(7)=1,"TFU supported")
-PROCcheck(FNparam(8)=1,"compute (CSD) supported")
-REM CREATE_BO (&C0106442): size, flags -> handle, offset
-DIM h%(7),o%(7)
-FOR i%=0 TO 7
- a%!0=(i%+1)*65536:a%!4=0:a%!8=0:a%!12=0
- r%=FNioctl(&C0106442)
- h%(i%)=a%!8:o%(i%)=a%!12
- PROCcheck(r%=0 AND h%(i%)<>0 AND (o%(i%) AND 4095)=0,"buffer "+STR$i%+" ("+STR$((i%+1)*64)+" KB): handle "+STR$h%(i%)+", GPU address &"+STR$~o%(i%))
-NEXT
-REM MMAP_BO (&C0106443): the buffer's address for the program
-a%!0=h%(7):a%!4=0:a%!8=0:a%!12=0
-PROCcheck(FNioctl(&C0106443)=0,"MMAP_BO")
-p%=a%!8
-PROCsay("Buffer 7 is at &"+STR$~p%)
-ok%=TRUE
-FOR i%=0 TO 512*1024-4 STEP 4096:IF p%!i%<>0 THEN ok%=FALSE
-NEXT
-PROCcheck(ok%,"a new buffer reads as zero")
-FOR i%=0 TO 512*1024-4 STEP 4:p%!i%=i% EOR &5A5A5A5A:NEXT
-ok%=TRUE
-FOR i%=0 TO 512*1024-4 STEP 4:IF p%!i%<>(i% EOR &5A5A5A5A) THEN ok%=FALSE
-NEXT
-PROCcheck(ok%,"512 KB written and read back")
-REM GET_BO_OFFSET (&C0086445)
-a%!0=h%(3):a%!4=0
-PROCcheck(FNioctl(&C0086445)=0 AND a%!4=o%(3),"GET_BO_OFFSET")
-REM WAIT_BO (&C0106441) on an idle buffer, timeout 0
-a%!0=h%(3):a%!4=0:a%!8=0:a%!12=0
-PROCcheck(FNioctl(&C0106441)=0,"WAIT_BO on an idle buffer")
-REM GEM_CLOSE (&40086409) frees them
-FOR i%=0 TO 7
- a%!0=h%(i%):a%!4=0
- PROCcheck(FNioctl(&40086409)=0,"buffer "+STR$i%+" freed")
-NEXT
-a%!0=h%(0):a%!4=0
-PROCcheck(FNioctl(&40086409)=-22,"a freed handle is refused (EINVAL)")
-SYS "V3DRender_Close",f%
-SYS "V3DRender_Info" TO ,,,,,used2%
-PROCcheck(used2%=used%,"all the memory is back ("+STR$(used2%DIV1024)+" KB in use)")
-IF fails%=0 THEN PROCsay("All passed.") ELSE PROCsay(STR$fails%+" failed.")
-PROCsay("Then type *V3DRender and *V3DClock and add what they say to Results.")
-CLOSE#out%:out%=0
-SYS "OS_File",18,dir$+".Results",&FFF
-END
-DEF FNparam(n%):a%!0=n%:a%!4=0:a%!8=0:a%!12=0:IF FNioctl(&C0106444)<>0 THEN =-1
-=a%!8
-DEF FNioctl(req%):LOCAL r%:SYS "V3DRender_Ioctl",f%,req%,a% TO r%:=r%
-DEF PROCcheck(c%,t$):IF c% THEN PROCsay("  ok    "+t$) ELSE PROCsay("  FAIL  "+t$):fails%+=1
-ENDPROC
-DEF PROCsay(t$):PRINT t$:BPUT#out%,t$:ENDPROC
-DEF FNstr(p%):LOCAL s$:WHILE ?p%>=32:s$+=CHR$?p%:p%+=1:ENDWHILE:=s$
-DEF FNdir:LOCAL b%:DIM b% 256
-SYS "OS_GSTrans","<V3DCheck$Dir>",b%,256
-=FNstr(b%)
+10 REM V3DCheck: V3DRender's first test on a Raspberry Pi 4.
+20 REM It asks the module about the GPU, makes and frees buffers, and checks
+30 REM that a buffer's memory and its page-table entry are right. It sends no
+40 REM job to the GPU yet. Results go on the screen and into Results.
+50 REM SPDX-License-Identifier: GPL-2.0-or-later
+60 REM Copyright (c) 2026 Andrew Youll
+70 out%=0
+80 ON ERROR PRINT REPORT$;" (line ";ERL;")":IF out% THEN BPUT#out%,REPORT$+" (line "+STR$ERL+")":CLOSE#out%:END ELSE END
+90 dir$=FNdir
+100 IF dir$="" THEN PRINT "Run V3DCheck with Check (it sets V3DCheck$Dir)":END
+110 out%=OPENOUT(dir$+".Results")
+120 fails%=0
+130 PROCsay("V3DCheck: V3DRender on this machine")
+140 SYS "OS_Module",18,"V3DRender"
+150 SYS "V3DRender_Info" TO ver%,v3d%,id1%,hz%,mem%,used%,files%,name%
+160 PROCsay("V3DRender "+STR$(ver%DIV100)+"."+RIGHT$("0"+STR$(ver%MOD100),2)+", V3D "+STR$(v3d%DIV10)+"."+STR$(v3d%MOD10)+", HUB_IDENT1 &"+STR$~id1%+", clock "+STR$(hz%DIV1000000)+" MHz")
+170 PROCsay("Buffer memory "+STR$(mem%DIV1048576)+" MB, "+STR$(used%DIV1024)+" KB in use, DRM driver "+FNstr(name%))
+180 PROCcheck(v3d%=42,"the GPU is a V3D 4.2")
+190 SYS "V3DRender_Open",0 TO f%
+200 PROCsay("Opened file "+STR$f%)
+210 DIM a% 64
+220 REM GET_PARAM (&C0106444): CORE0_IDENT0 (4), HUB_IDENT1 (1), SUPPORTS_TFU (7), SUPPORTS_CSD (8)
+230 PROCcheck(FNparam(4)=&04443356,"CORE0_IDENT0 reads ""V3D"" (&04443356)")
+240 PROCcheck(FNparam(1)=id1%,"HUB_IDENT1 matches")
+250 PROCcheck(FNparam(7)=1,"TFU supported")
+260 PROCcheck(FNparam(8)=1,"compute (CSD) supported")
+270 REM CREATE_BO (&C0106442): size, flags -> handle, offset
+280 DIM h%(7),o%(7)
+290 FOR i%=0 TO 7
+300  a%!0=(i%+1)*65536:a%!4=0:a%!8=0:a%!12=0
+310  r%=FNioctl(&C0106442)
+320  h%(i%)=a%!8:o%(i%)=a%!12
+330  PROCcheck(r%=0 AND h%(i%)<>0 AND (o%(i%) AND 4095)=0,"buffer "+STR$i%+" ("+STR$((i%+1)*64)+" KB): handle "+STR$h%(i%)+", GPU address &"+STR$~o%(i%))
+340 NEXT
+350 REM MMAP_BO (&C0106443): the buffer's address for the program
+360 a%!0=h%(7):a%!4=0:a%!8=0:a%!12=0
+370 PROCcheck(FNioctl(&C0106443)=0,"MMAP_BO")
+380 p%=a%!8
+390 PROCsay("Buffer 7 is at &"+STR$~p%)
+400 ok%=TRUE
+410 FOR i%=0 TO 512*1024-4 STEP 4096:IF p%!i%<>0 THEN ok%=FALSE
+420 NEXT
+430 PROCcheck(ok%,"a new buffer reads as zero")
+440 FOR i%=0 TO 512*1024-4 STEP 4:p%!i%=i% EOR &5A5A5A5A:NEXT
+450 ok%=TRUE
+460 FOR i%=0 TO 512*1024-4 STEP 4:IF p%!i%<>(i% EOR &5A5A5A5A) THEN ok%=FALSE
+470 NEXT
+480 PROCcheck(ok%,"512 KB written and read back")
+490 REM GET_BO_OFFSET (&C0086445)
+500 a%!0=h%(3):a%!4=0
+510 PROCcheck(FNioctl(&C0086445)=0 AND a%!4=o%(3),"GET_BO_OFFSET")
+520 REM WAIT_BO (&C0106441) on an idle buffer, timeout 0
+530 a%!0=h%(3):a%!4=0:a%!8=0:a%!12=0
+540 PROCcheck(FNioctl(&C0106441)=0,"WAIT_BO on an idle buffer")
+550 REM GEM_CLOSE (&40086409) frees them
+560 FOR i%=0 TO 7
+570  a%!0=h%(i%):a%!4=0
+580  PROCcheck(FNioctl(&40086409)=0,"buffer "+STR$i%+" freed")
+590 NEXT
+600 a%!0=h%(0):a%!4=0
+610 PROCcheck(FNioctl(&40086409)=-22,"a freed handle is refused (EINVAL)")
+620 SYS "V3DRender_Close",f%
+630 SYS "V3DRender_Info" TO ,,,,,used2%
+640 PROCcheck(used2%=used%,"all the memory is back ("+STR$(used2%DIV1024)+" KB in use)")
+650 IF fails%=0 THEN PROCsay("All passed.") ELSE PROCsay(STR$fails%+" failed.")
+660 PROCsay("V3DJob is next.")
+670 CLOSE#out%:out%=0
+680 SYS "OS_File",18,dir$+".Results",&FFF
+690 END
+700 DEF FNparam(n%):a%!0=n%:a%!4=0:a%!8=0:a%!12=0:IF FNioctl(&C0106444)<>0 THEN =-1
+710 =a%!8
+720 DEF FNioctl(req%):LOCAL r%:SYS "V3DRender_Ioctl",f%,req%,a% TO r%:=r%
+730 DEF PROCcheck(c%,t$):IF c% THEN PROCsay("  ok    "+t$) ELSE PROCsay("  FAIL  "+t$):fails%+=1
+740 ENDPROC
+750 DEF PROCsay(t$):PRINT t$:BPUT#out%,t$:ENDPROC
+760 DEF FNstr(p%):LOCAL s$:WHILE ?p%>=32:s$+=CHR$?p%:p%+=1:ENDWHILE:=s$
+770 DEF FNdir:LOCAL b%:DIM b% 256
+780 SYS "OS_GSTrans","<V3DCheck$Dir>",b%,256
+790 =FNstr(b%)

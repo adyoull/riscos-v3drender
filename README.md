@@ -6,9 +6,9 @@ runs in the program and sends its work to V3DRender, as it sends it to
 Linux's v3d driver through a DRM device. RISC3D lists V3DRender as the
 machine's 3D driver.
 
-**Version 0.01, 12 November 2026: first build, not yet run on a Pi.** It
-has run in a simulated GPU (the core) and in an emulated RISC OS (the
-module). The SWI chunk (&C3D40) and error block (&81D340) are
+**Version 0.02, 12 November 2026.** 0.01 passed its first test on a
+Pi 4 (loading, power-up, buffers, reload); 0.02 brings the GPU's first
+jobs (`V3DRenderTest-2.zip`), not yet run on the Pi. The SWI chunk (&C3D40) and error block (&81D340) are
 provisional.
 
 ## How it fits
@@ -46,7 +46,7 @@ OS when there is one; the RISC OS layer here is the Pi 4's.
 | `riscos/` | The module: `module.c` (SWIs, files, RISC3D), `plat_pi4.c` (registers, power, memory, the interrupt), `header.s`. |
 | `test/host/` | The core on the build machine with a simulated V3D: jobs, dependencies, binner overflow, MMU entries, sync objects, timeouts and reset, old structure sizes, V3D 7.1. |
 | `test/riscos/` | The built module in Unicorn with a stand-in Pi 4: power-up, the page table, every SWI, a job finished by the real interrupt path, unload, reload on a running GPU. |
-| `kit/` | The first Pi test (`V3DRenderTest.zip`). |
+| `kit/` | The Pi tests: V3DCheck (buffers), V3DJob (cleared frames, built as Mesa builds them, in `kit/src/`) and HangTest (`V3DRenderTest-2.zip`). |
 
 ## What the driver does
 

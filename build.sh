@@ -48,8 +48,25 @@ else
   echo "(unicorn isn't installed: the module's emulator test was skipped)"
 fi
 
+# the kit's first GPU jobs: the control lists checked against Mesa's
+# packet definitions, then V3DJob run against the core with a GPU that
+# carries out its frames, then built for RISC OS
+mkdir -p out/cl
+gcc -std=gnu11 -Wall -Wextra -Werror -Ikit/src -o out/cltest test/host/cltest.c kit/src/clbuild.c
+out/cltest out/cl > /dev/null
+python3 -B test/host/cldecode.py test/host/v3d_packet.xml out/cl | tail -1
+gcc -std=gnu11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined $INC -Ikit/src \
+  -o out/jobhost kit/src/v3djob.c kit/src/clbuild.c test/host/jobhost.c $CORE
+out/jobhost | grep -E "passed|failed"
+out/jobhost hang | grep -E "passed|failed"
+AC="-std=gnu11 -O2 -mfpu=vfpv3 -mfloat-abi=hard -Wall -Wextra -Werror"
+${T}gcc $AC -Iinclude -Ikit/src -static -o out/obj/v3djob.elf kit/src/v3djob.c \
+  kit/src/v3djob_riscos.c kit/src/clbuild.c
+${T}strip out/obj/v3djob.elf
+"${RISCOS_TOOLCHAIN}/bin/elf2aif" -e out/obj/v3djob.elf "out/obj/V3DJob,ff8" > /dev/null
+
 # the Pi test kit
 cp "out/V3DRender,ffa" out/obj/
-python3 tools/mkkit.py out/V3DRenderTest.zip V3DRenderTest kit/ReadMe,fff kit/Check,feb \
-  kit/V3DCheck,fd1 "out/obj/V3DRender,ffa"
-ls -la "out/V3DRender,ffa" out/V3DRenderTest.zip
+python3 tools/mkkit.py out/V3DRenderTest-2.zip V3DRenderTest2 kit/ReadMe,fff kit/Check,feb \
+  kit/HangTest,feb kit/V3DCheck,fd1 "out/obj/V3DJob,ff8" "out/obj/V3DRender,ffa"
+ls -la "out/V3DRender,ffa" out/V3DRenderTest-2.zip

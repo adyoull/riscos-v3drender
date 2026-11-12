@@ -69,6 +69,10 @@ v3d_job_done (struct v3d_dev *v3d, int q, int failed)
     return;
   v3d->active[q] = 0;
   job->failed = (uint8_t) failed;
+  /* A render job whose bin job failed isn't run: its tile lists aren't
+     there (Linux: the bin fence's error ends the render job unrun). */
+  if (failed && q == V3D_BIN && job->a.cl.render)
+    job->a.cl.render->skip = 1;
   retire (v3d, job);
 }
 
@@ -84,6 +88,13 @@ v3d_pump (struct v3d_dev *v3d)
 	if (!v3d->active[q] && v3d->head[q] && deps_done (v3d, v3d->head[q]))
 	  {
 	    struct v3d_job *job = pop (v3d, q);
+	    if (job->skip)
+	      {
+		job->failed = 1;
+		retire (v3d, job);
+		progress = 1;
+		continue;
+	      }
 	    v3d->active[q] = job;
 	    job->started = 1;
 	    job->start_cs = 0;		/* v3d_service sets it */

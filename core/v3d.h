@@ -73,7 +73,7 @@ struct v3d_fence { uint32_t q, seq; };	/* seq 0: no wait */
 struct v3d_job
 {
   struct v3d_job *next;
-  uint8_t q, failed, started, on_retired;
+  uint8_t q, failed, started, skip;	/* skip: its bin job failed */
   uint32_t seq;
   uint32_t dep[V3D_NQ];			/* fences that must be done first */
   uint32_t start_cs, timedout_ctca, timedout_ctra;

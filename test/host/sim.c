@@ -458,6 +458,23 @@ test_old_struct_csd_reset (void)
   CHECK (syncobj_done (f, hout));		/* signalled, as failed */
   CHECK (regs[V3D_BANK_HUB][V3D_MMU_CTL / 4] & V3D_MMU_CTL_ENABLE);	/* MMU back */
 
+  /* a bin job that hangs: its render job is never run */
+  uint32_t bout = syncobj (f, 0);
+  struct drm_v3d_submit_cl bh = { .bcl_start = 0x30, .bcl_end = 0x31, .rcl_start = 0x40,
+				  .rcl_end = 0x50, .out_sync = bout };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &bh) == 0);
+  CHECK (busy[V3D_BIN] && !busy[V3D_RENDER]);
+  uint32_t rstarts = 0;
+  regs[V3D_BANK_CORE0][V3D_CLE_CT1QBA / 4] = 0;
+  now_cs += 20;
+  v3d_service (dev);
+  now_cs += 60;
+  v3d_service (dev);
+  CHECK (resets == 2 && dev->stats.timeouts == 2);
+  CHECK (!busy[V3D_RENDER] && regs[V3D_BANK_CORE0][V3D_CLE_CT1QBA / 4] != 0x40);
+  CHECK (syncobj_done (f, bout));		/* the render job ended unrun */
+  (void) rstarts;
+
   /* the GPU still works after the reset */
   uint32_t aout = syncobj (f, 0);
   s.out_sync = aout;

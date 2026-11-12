@@ -1,30 +1,34 @@
-V3DRender 0.01: the first test on a Raspberry Pi 4
-===================================================
+V3DRender 0.02: the GPU's first jobs on a Raspberry Pi 4
+=========================================================
 
-V3DRender is a new driver for the Pi 4's GPU (V3D 4.2), following Linux's
-v3d driver. This first test checks that it loads, powers the GPU up, finds
-it, and manages GPU memory. It sends the GPU no work yet.
+V3DRender is the new driver for the Pi 4's GPU (V3D 4.2), following
+Linux's v3d driver. The first kit showed that it loads, powers the GPU up
+and manages GPU memory. This one gives the GPU its first work: frames
+that are only cleared to a colour, built as Mesa's v3d driver builds them
+(a bin job and a render job). That tests the GPU's own MMU (page table),
+V3DRender's job queues, the GPU's interrupt and the waits.
 
 Before you start
 - A Pi 4, Pi 400 or CM4 with RISC OS 5.30 or later.
-- Rob Heaton's V3DDriver must not be loaded (V3DRender refuses to load
-  beside it): *RMKill V3DDriver, or restart without it.
-- Copy this folder to a hard disc (SDFS:: is fine).
+- V3DDriver must not be loaded (*RMKill V3DDriver).
+- Copy this folder to a hard disc.
 
 The test
-1. Double-click Check. It loads V3DRender from this folder and runs
-   V3DCheck, which prints its results and writes them to Results.
-2. At the command line (F12, or a task window), type:
-      *V3DRender
-      *V3DClock
-   and add what they print to Results (or photograph the screen).
-3. Optional: *RMKill V3DRender, then double-click Check again (it
-   reloads it). The second load must say "already running at load" in
-   *V3DRender and must not freeze: that is the reload check.
-4. Send Results back.
+1. Double-click Check. It loads V3DRender 0.02 from this folder (it
+   replaces 0.01 if that is loaded), runs V3DCheck as before, then
+   V3DJob:
+   - a 128x128 frame cleared to one colour, every pixel checked, and the
+     memory either side checked untouched;
+   - a 1920x1080 frame, then 200 more, timed.
+   Both programs write to Results; at the end V3DJob shows *V3DRender
+   (its jobs and interrupts should now count up) and adds that too.
+2. Only if step 1 passed, double-click HangTest. It gives the GPU a job
+   that never ends. V3DRender should notice after half a second, reset
+   the GPU, end the job, and the next frame should be right. *V3DRender
+   then shows Timeouts 1 and Resets 1. This is the first reset on real
+   hardware, so if anything is going to freeze the machine it is this:
+   if it does, restart and say so.
+3. Send Results back (or photos of the screens).
 
-If the machine freezes at step 1, restart and send a photo of the screen.
-If V3DRender reports an error when it loads, the error's text is what's
-needed.
-
-Leaving it loaded does no harm; nothing uses it until Mesa does.
+If step 1 freezes the machine or reports a timeout, restart, and send a
+photo of the screen.
