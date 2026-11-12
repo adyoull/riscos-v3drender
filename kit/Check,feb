@@ -1,0 +1,6 @@
+| Check: loads V3DRender from this folder (if it isn't loaded) and runs
+| V3DCheck, which writes Results here.
+Set V3DCheck$Dir <Obey$Dir>
+RMEnsure V3DRender 0.01 RMLoad <Obey$Dir>.V3DRender
+RMEnsure V3DRender 0.01 Error V3DRender didn't load
+Run <Obey$Dir>.V3DCheck

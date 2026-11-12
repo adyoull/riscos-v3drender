@@ -1,0 +1,70 @@
+V3DRender - the Raspberry Pi 4's GPU for RISC OS
+
+Copyright (c) 2026 Andrew Youll
+
+This program is free software; you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the Free
+Software Foundation; either version 2 of the License, or (at your option)
+any later version (SPDX: GPL-2.0-or-later). The text of version 2 is in
+LICENSE.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+more details.
+
+
+Material from other projects
+============================
+
+1. The Linux kernel's v3d driver (drivers/gpu/drm/v3d, Raspberry Pi kernel
+   rpi-6.12.y): GPL-2.0-or-later, Copyright (C) 2014-2018 Broadcom,
+   Copyright (C) 2023 Raspberry Pi.
+   - core/v3d_regs.h is Linux's file, unchanged.
+   - core/v3d_hw.c, core/v3d_sched.c, core/v3d_bo.c and core/v3d_ioctl.c
+     follow Linux's v3d_drv.c, v3d_gem.c, v3d_mmu.c, v3d_irq.c,
+     v3d_sched.c, v3d_bo.c and v3d_submit.c.
+
+2. Linux's v3d request interface (include/uapi/drm/v3d_drm.h): MIT licence,
+   Copyright (C) 2014-2018 Broadcom. include/drm/v3d_drm.h is that file,
+   unchanged, with its notice.
+
+3. Rob Heaton's V3DDriver (github.com/robheaton/riscos-v3d): GPL-2.0-or-
+   later, Copyright (C) 2026 Rob Heaton. riscos/plat_pi4.c follows its
+   Pi 4 power-up (v3d_power_on), its check for a V3D that is already
+   running (v3d_hw_is_up), its bus-gate stop (v3d_stop_bridge), its
+   firmware clock calls (v3d_clock.c) and its interrupt device number
+   (v3d_irq.c). V3DDriver took the register offsets and the power-on
+   sequence from rpi4-gpu-bare-metal-examples (MIT licence, Copyright (c)
+   2022 Random06457, github.com/Random06457/rpi4-gpu-bare-metal-examples),
+   whose notice follows.
+
+   MIT License
+
+   Copyright (c) 2022 Random06457
+
+   Permission is hereby granted, free of charge, to any person obtaining a
+   copy of this software and associated documentation files (the
+   "Software"), to deal in the Software without restriction, including
+   without limitation the rights to use, copy, modify, merge, publish,
+   distribute, sublicense, and/or sell copies of the Software, and to
+   permit persons to whom the Software is furnished to do so, subject to
+   the following conditions:
+
+   The above copyright notice and this permission notice shall be included
+   in all copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+   IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+   CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+   TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+   SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+4. common/ (the C module framework) and test/riscos/emu.py: MIT licence,
+   Copyright (c) 2026 Andrew Youll.
+
+5. RISC OS Open's Programmer's Reference Manual was used for the SWIs
+   (OS_DynamicArea, OS_Memory, OS_ClaimDeviceVector, BCMSupport); nothing
+   from it is reproduced.
