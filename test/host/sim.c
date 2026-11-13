@@ -456,6 +456,11 @@ test_old_struct_csd_reset (void)
   v3d_service (dev);				/* and then it hadn't moved */
   CHECK (resets == 1 && dev->stats.timeouts == 1);
   CHECK (syncobj_done (f, hout));		/* signalled, as failed */
+  struct drm_v3d_get_param rc = { .param = DRM_V3D_PARAM_GLOBAL_RESET_COUNTER };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_GET_PARAM, &rc) == 0 && rc.value == 1);
+  rc.param = DRM_V3D_PARAM_CONTEXT_RESET_COUNTER;
+  rc.value = 0;
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_GET_PARAM, &rc) == 0 && rc.value == 1);
   CHECK (regs[V3D_BANK_HUB][V3D_MMU_CTL / 4] & V3D_MMU_CTL_ENABLE);	/* MMU back */
 
   /* a bin job that hangs: its render job is never run */

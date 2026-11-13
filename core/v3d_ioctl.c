@@ -51,7 +51,7 @@ lookup_syncobj (struct v3d_dev *v3d, int file, uint32_t handle)
 /* ---- v3d_drv.c ---- */
 
 static int
-get_param (struct v3d_dev *v3d, struct drm_v3d_get_param *args)
+get_param (struct v3d_dev *v3d, int f, struct drm_v3d_get_param *args)
 {
   static const uint32_t reg_map[] = {
     [DRM_V3D_PARAM_V3D_UIFCFG] = V3D_HUB_UIFCFG,
@@ -93,6 +93,12 @@ get_param (struct v3d_dev *v3d, struct drm_v3d_get_param *args)
     case DRM_V3D_PARAM_MAX_PERF_COUNTERS:
     case DRM_V3D_PARAM_SUPPORTS_SUPER_PAGES:
       args->value = 0;			/* not yet */
+      return 0;
+    case DRM_V3D_PARAM_GLOBAL_RESET_COUNTER:
+      args->value = v3d->stats.resets;
+      return 0;
+    case DRM_V3D_PARAM_CONTEXT_RESET_COUNTER:
+      args->value = v3d->files[f].resets;
       return 0;
     default:
       return -V3D_EINVAL;
@@ -655,7 +661,7 @@ v3d_ioctl (struct v3d_dev *v3d, int f, uint32_t request, void *arg)
       case DRM_V3D_WAIT_BO: ret = wait_bo (v3d, f, &a.wait_bo); break;
       case DRM_V3D_CREATE_BO: ret = create_bo (v3d, f, &a.create_bo); break;
       case DRM_V3D_MMAP_BO: ret = mmap_bo (v3d, f, &a.mmap_bo); break;
-      case DRM_V3D_GET_PARAM: ret = get_param (v3d, &a.get_param); break;
+      case DRM_V3D_GET_PARAM: ret = get_param (v3d, f, &a.get_param); break;
       case DRM_V3D_GET_BO_OFFSET: ret = get_bo_offset (v3d, f, &a.get_bo_offset); break;
       case DRM_V3D_SUBMIT_TFU: ret = submit_tfu (v3d, f, &a.submit_tfu); break;
       case DRM_V3D_SUBMIT_CSD: ret = submit_csd (v3d, f, &a.submit_csd); break;

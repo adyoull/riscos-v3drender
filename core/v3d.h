@@ -74,6 +74,7 @@ struct v3d_job
 {
   struct v3d_job *next;
   uint8_t q, failed, started, skip;	/* skip: its bin job failed */
+  uint8_t guilty;			/* timed out: the reset is its doing */
   uint32_t seq;
   uint32_t dep[V3D_NQ];			/* fences that must be done first */
   uint32_t start_cs, timedout_ctca, timedout_ctra;
@@ -104,6 +105,7 @@ struct v3d_file
 {
   int used;
   uint32_t owner;			/* the platform's: a Wimp task, say */
+  uint32_t resets;			/* resets its jobs caused */
   uint16_t *handles;			/* handle (from 1) -> BO */
   struct v3d_syncobj *syncobjs;		/* handle (from 1) */
 };

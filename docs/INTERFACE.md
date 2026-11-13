@@ -24,7 +24,7 @@ raised for those.
 
 | Request | As Linux? | Notes |
 |---|---|---|
-| `DRM_IOCTL_V3D_GET_PARAM` | yes | identity registers; TFU, CSD, cache flush 1; perfmon, multisync, CPU queue, super pages 0 |
+| `DRM_IOCTL_V3D_GET_PARAM` | yes | identity registers; TFU, CSD, cache flush 1; perfmon, multisync, CPU queue, super pages 0; `GLOBAL_RESET_COUNTER` (resets so far) and `CONTEXT_RESET_COUNTER` (resets this file's jobs caused), which current Mesa uses for robustness |
 | `DRM_IOCTL_V3D_CREATE_BO` | yes | `offset` = GPU address. Zeroed. |
 | `DRM_IOCTL_V3D_MMAP_BO` | differs | `offset` is the BO's address: already mapped, readable and writable by the program. libdrm's `mmap (0, size, ..., fd, offset)` returns it as it is; `munmap` does nothing. |
 | `DRM_IOCTL_V3D_GET_BO_OFFSET` | yes | |

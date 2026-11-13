@@ -27,7 +27,8 @@ Material from other projects
 
 2. Linux's v3d request interface (include/uapi/drm/v3d_drm.h): MIT licence,
    Copyright (C) 2014-2018 Broadcom. include/drm/v3d_drm.h is that file,
-   unchanged, with its notice.
+   unchanged, with its notice, as Mesa carries it (include/drm-uapi,
+   with the reset counters of newer kernels).
 
 3. Rob Heaton's V3DDriver (github.com/robheaton/riscos-v3d): GPL-2.0-or-
    later, Copyright (C) 2026 Rob Heaton. riscos/plat_pi4.c follows its

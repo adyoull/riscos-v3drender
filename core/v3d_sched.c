@@ -191,7 +191,15 @@ v3d_gpu_reset_now (struct v3d_dev *v3d)
   v3d_reset (v3d);
   for (int q = 0; q < V3D_HW_QUEUES; q++)
     if (v3d->active[q])
-      v3d_job_done (v3d, q, 1);
+      {
+	/* Linux counts the reset against the file whose job hung (its
+	   CONTEXT_RESET_COUNTER), and against everyone (GLOBAL) */
+	struct v3d_job *job = v3d->active[q];
+	if (job->guilty && job->file >= 0 && job->file < V3D_MAX_FILES
+	    && v3d->files[job->file].used)
+	  v3d->files[job->file].resets++;
+	v3d_job_done (v3d, q, 1);
+      }
   v3d_pump (v3d);
   plat_irq_restore (s);
 }
@@ -243,6 +251,7 @@ v3d_service (struct v3d_dev *v3d)
 	      else
 		{
 		  v3d->stats.timeouts++;
+		  job->guilty = 1;
 		  v3d->reset_needed = 1;
 		}
 	    }

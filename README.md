@@ -42,7 +42,7 @@ OS when there is one; the RISC OS layer here is the Pi 4's.
 | Part | What it is |
 |---|---|
 | `core/` | The driver, after Linux's `drivers/gpu/drm/v3d` (rpi-6.12.y): hardware sequences (`v3d_hw.c`), queues, fences and hang checks (`v3d_sched.c`), buffers (`v3d_bo.c`), the request interface (`v3d_ioctl.c`). `v3d_regs.h` is Linux's, unchanged. |
-| `include/drm/` | `v3d_drm.h` is Linux's request interface (MIT), unchanged; `drm.h` the generic calls Mesa uses (GEM_CLOSE, sync objects) and RISC OS's sync files. |
+| `include/drm/` | `v3d_drm.h` is Linux's request interface (MIT), unchanged, as current Mesa carries it; `drm.h` the generic calls Mesa uses (GEM_CLOSE, sync objects) and RISC OS's sync files. |
 | `riscos/` | The module: `module.c` (SWIs, files, RISC3D), `plat_pi4.c` (registers, power, memory, the interrupt), `header.s`. |
 | `test/host/` | The core on the build machine with a simulated V3D: jobs, dependencies, binner overflow, MMU entries, sync objects, timeouts and reset, old structure sizes, V3D 7.1. |
 | `test/riscos/` | The built module in Unicorn with a stand-in Pi 4: power-up, the page table, every SWI, a job finished by the real interrupt path, unload, reload on a running GPU. |

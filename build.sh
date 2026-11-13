@@ -67,6 +67,7 @@ ${T}strip out/obj/v3djob.elf
 
 # the Pi test kit
 cp "out/V3DRender,ffa" out/obj/
-python3 tools/mkkit.py out/V3DRenderTest-2.zip V3DRenderTest2 kit/ReadMe,fff kit/Check,feb \
+python3 tools/mkkit.py out/V3DRenderTest.zip V3DRenderTest kit/ReadMe,fff kit/Check,feb \
   kit/HangTest,feb kit/V3DCheck,fd1 "out/obj/V3DJob,ff8" "out/obj/V3DRender,ffa"
-ls -la "out/V3DRender,ffa" out/V3DRenderTest-2.zip
+ls -la "out/V3DRender,ffa" out/V3DRenderTest.zip
+# (delivered kits are numbered: V3DRenderTest-2.zip was 0.02's)

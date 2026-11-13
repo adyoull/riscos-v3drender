@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.03: the reset counters current Mesa asks for (13 November 2026)
+
+- GET_PARAM answers `DRM_V3D_PARAM_GLOBAL_RESET_COUNTER` (every reset)
+  and `DRM_V3D_PARAM_CONTEXT_RESET_COUNTER` (resets caused by this file's
+  jobs, counted against the job that timed out), as newer Linux kernels
+  do; current Mesa's v3d driver reads them (robustness: whether a reset
+  was the program's doing). `include/drm/v3d_drm.h` is now the copy
+  current Mesa carries, which adds those two names; nothing else in it
+  differs.
+- For RISC3D's two-Mesa plan (riscos-mesa adds a newer Mesa with only
+  the v3d driver, on V3DRender): checked against current Mesa's v3d
+  driver, which needs nothing else from V3DRender for a first version.
+  Kit 2 (0.02) is unchanged; this changes nothing it tests.
+
 ## 0.02: the GPU's first jobs (12 November 2026)
 
 0.01 passed on the owner's Pi 4: power-up, V3D 4.2 rev 14, a 1 GB buffer
