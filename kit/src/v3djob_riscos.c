@@ -54,6 +54,24 @@ now_cs (void)
 #define RISC3D_Open  0xC3D02
 #define RISC3D_Close 0xC3D03
 
+uint32_t
+sys_pte (uint32_t gpu)
+{
+  unsigned pte = 0;
+  if (_swix (0xC3D45, _INR (0, 1) | _OUT (0), 0, gpu, &pte))
+    return 0;
+  return pte;
+}
+
+int
+sys_pa_width (void)
+{
+  unsigned va = 0, pa = 0;
+  if (_swix (0xC3D45, _IN (0) | _OUT (0) | _OUT (1), 1, &va, &pa))
+    return 0;
+  return (int) pa;
+}
+
 const uint32_t *
 sys_stats (void)
 {

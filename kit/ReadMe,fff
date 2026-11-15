@@ -1,31 +1,28 @@
-V3DRender 0.06: kit 6, replaying Mesa's job
-============================================
+V3DRender 0.07: kit 7, Mesa's Z store
+======================================
 
-Kit 5 showed that all the GPU's processors run work (4096 workgroups,
-every one right). So the hang in Mesa's frames is something in the job
-itself, or in how the GPU handles it. MesaJob is the *V3DDump you sent:
-Mesa's first job, as the GPU had it. Replay runs it again from V3DJob,
-without Mesa: once as Mesa sent it, then once each with one change:
+Kit 6 found it: Mesa's first job finishes at once without its Z store
+(the depth buffer written from the tile to memory), and hangs in every
+other form. Kit 7's Replay runs the job again, now also:
 
-  - without the Z store;
-  - without the colour store;
-  - without either store;
-  - without its primitives;
-  - with the fragment shader not 4-way threadable;
-  - with the scoreboard turned off.
+  - with the Z store into the colour buffer's memory;
+  - with the colour store into the Z buffer's memory (and no Z store);
+  - with the Z store into a new buffer;
 
-Whichever changes let the GPU finish point at the cause. Each run that
-hangs takes about 1.3 s and V3DRender resets the GPU; that's expected.
+and lists where each buffer's pages are in memory, as the GPU sees
+them. If the Z buffer's memory is the problem, the Z store works
+elsewhere and the colour store fails there; if storing Z is, the Z
+store fails everywhere.
 
-The V3DRender module is 0.06, as you have loaded.
+V3DRender 0.07 adds the call Replay uses to read the GPU's page table.
 
 Before you start
 - A Pi 4, Pi 400 or CM4 with RISC OS 5.30 or later. V3DDriver not
   loaded. Copy this folder to a hard disc.
 
 The test
-1. Double-click Replay. It loads V3DRender 0.06 from this folder if it
-   isn't loaded. No program should be using the GPU at the same time:
+1. Double-click Replay. It loads V3DRender 0.07 from this folder, in
+   place of an older one. No program should be using the GPU at the same time:
    Replay needs the buffer addresses Mesa's job had.
 2. Optional: double-click Check too (kits 1-5's tests, all passed in
    kit 5).

@@ -449,6 +449,7 @@ test_risc3d (void)
 struct rbo { uint32_t gpu, size; const uint8_t *data; struct bo bo; };
 
 static uint8_t *rd_buf;
+static struct bo spare;
 static uint32_t rd_w[12];
 static struct rbo rbos[64];
 static unsigned nrbos;
@@ -526,6 +527,37 @@ replay_load (const char *path)
 	    return -1;
 	}
     }
+  /* where the BOs' pages are in memory, from the GPU's page table */
+  int paw = sys_pa_width ();
+  printf ("  the GPU's MMU: physical addresses of %d bits%s\n", paw,
+	  paw ? "" : " (V3DRender older than 0.07: no page details)");
+  for (unsigned i = 0; paw && i < nrbos; i++)
+    {
+      uint64_t lo = ~0ull, hi = 0;
+      unsigned big = 0, super = 0, bad = 0;
+      for (uint32_t a = rbos[i].gpu; a < rbos[i].gpu + rbos[i].size; a += 4096)
+	{
+	  uint32_t pte = sys_pte (a);
+	  uint64_t pa = (uint64_t) (pte & 0xFFFFFF) << 12;
+	  if (!(pte & (1u << 28)))
+	    bad++;
+	  big += (pte >> 30) & 1;
+	  super += (pte >> 31) & 1;
+	  if (pa < lo)
+	    lo = pa;
+	  if (pa > hi)
+	    hi = pa;
+	}
+      printf ("    BO &%08X %7u bytes: physical &%09llX-&%09llX, %u 64K-page and %u 1M-page entries%s%s\n",
+	      rbos[i].gpu, rbos[i].size, (unsigned long long) lo, (unsigned long long) hi + 4095,
+	      big, super, bad ? ", INVALID ENTRIES" : "",
+	      hi + 4096 > (1ull << paw) ? ", BEYOND THE GPU'S REACH" : "");
+    }
+  /* a spare BO, the size of the biggest store target, for "Z store elsewhere" */
+  if (bo_new (&spare, 266240))
+    return -1;
+  printf ("    spare BO &%08X: physical &%09llX\n", spare.gpu,
+	  (unsigned long long) (sys_pte (spare.gpu) & 0xFFFFFF) << 12);
   return 0;
 }
 
@@ -553,11 +585,15 @@ gtl_len (uint8_t op)
 }
 
 enum { NO_CHANGE, NO_Z_STORE, NO_COLOUR_STORE, NO_STORES, NO_PRIMITIVES,
-       FS_NOT_4WAY, NO_SCOREBOARD, LAST_CHANGE = NO_SCOREBOARD };
+       FS_NOT_4WAY, NO_SCOREBOARD, Z_TO_COLOUR_BO, COLOUR_TO_Z_BO, Z_TO_SPARE_BO,
+       LAST_CHANGE = Z_TO_SPARE_BO };
 static const char *const change_name[] = {
   "as Mesa sent it", "without the Z store", "without the colour store",
   "without either store", "without its primitives (no Branch to Implicit Tile List)",
-  "with the fragment shader not 4-way threadable", "with the scoreboard turned off" };
+  "with the fragment shader not 4-way threadable", "with the scoreboard turned off",
+  "with the Z store into the colour buffer's memory",
+  "with the colour store into the Z buffer's memory, and no Z store",
+  "with the Z store into a new BO" };
 
 /* the GL Shader State record the bin list names (opcode 64) */
 static uint8_t *
@@ -600,6 +636,7 @@ replay_run (int change)
       }
   uint8_t *g = gs ? replay_cpu (gs) : 0;
   int stores = 0, changed = change == NO_CHANGE;
+  uint32_t colour_at = 0, z_at = 0;
   for (uint32_t k = 0; g && k < ge - gs + 1;)
     {
       int n = gtl_len (g[k]);
@@ -609,7 +646,23 @@ replay_run (int change)
       if (g[k] == 0x1D)
 	{
 	  int z = stores++ > 0;			/* Mesa stores colour first, then Z */
-	  kill = change == NO_STORES || (change == NO_Z_STORE && z) || (change == NO_COLOUR_STORE && !z);
+	  kill = change == NO_STORES || (change == NO_Z_STORE && z) || (change == NO_COLOUR_STORE && !z)
+	    || (change == COLOUR_TO_Z_BO && z);
+	  /* the address: bits 64-95 of the packet (byte 9), as Mesa packs it */
+	  if (!z)
+	    memcpy (&colour_at, g + k + 9, 4);
+	  else
+	    memcpy (&z_at, g + k + 9, 4);
+	  if (z && change == Z_TO_COLOUR_BO)
+	    {
+	      memcpy (g + k + 9, &colour_at, 4);
+	      changed = 1;
+	    }
+	  if (z && change == Z_TO_SPARE_BO)
+	    {
+	      memcpy (g + k + 9, &spare.gpu, 4);
+	      changed = 1;
+	    }
 	}
       if (g[k] == 0x15 && change == NO_PRIMITIVES)
 	kill = 1;
@@ -621,6 +674,26 @@ replay_run (int change)
       if (g[k] == 0x12)
 	break;
       k += (uint32_t) n;
+    }
+  if (change == COLOUR_TO_Z_BO && g && z_at)
+    {
+      /* the colour store (the first 0x1D) now writes where Z went */
+      for (uint32_t k = 0; k < ge - gs + 1;)
+	{
+	  int n = gtl_len (g[k]);
+	  if (!n)
+	    break;
+	  if (g[k] == 0x1D)
+	    {
+	      uint32_t a;
+	      memcpy (&a, g + k + 9, 4);
+	      a = (a & 0x3F) | (z_at & ~0x3Fu);	/* keep the packet's low bits */
+	      memcpy (g + k + 9, &a, 4);
+	      changed = 1;
+	      break;
+	    }
+	  k += (uint32_t) n;
+	}
     }
   uint8_t *rec = replay_record ();
   if (rec && change == FS_NOT_4WAY)
@@ -638,11 +711,12 @@ replay_run (int change)
     .bcl_start = rd_w[6], .bcl_end = rd_w[7], .rcl_start = rd_w[4], .rcl_end = rd_w[5],
     .qma = rd_w[8], .qms = rd_w[9], .qts = rd_w[10], .out_sync = sync,
   };
-  uint32_t handles[64];
+  uint32_t handles[65];
   for (unsigned i = 0; i < nrbos; i++)
     handles[i] = rbos[i].bo.handle;
+  handles[nrbos] = spare.handle;
   c.bo_handles = (uintptr_t) handles;
-  c.bo_handle_count = nrbos;
+  c.bo_handle_count = nrbos + 1;
   uint32_t resets = stats ()[13];
   unsigned t0 = now_cs ();
   int r = ioctl_ (DRM_IOCTL_V3D_SUBMIT_CL, &c);

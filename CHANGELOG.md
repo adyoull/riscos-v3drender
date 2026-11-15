@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.07 and kit 7: is it the Z buffer's memory? (15 November 2026)
+
+Kit 6's replay on the Pi: Mesa's first job finished at once **without
+its Z store**, and hung in every other form:
+- as sent;
+- without the colour store;
+- without primitives (no shading at all);
+- with the FS not 4-way threadable;
+- with the scoreboard off;
+- with no stores at all (a tile with no store at all may not be valid).
+
+So it isn't the shaders or the threads: the GPU's store of the Z tile buffer to &244000 (UIF, Z/stencil) never completes.
+
+- **V3DRender_Debug (&C3D45)**, new: r0 = 0 returns the GPU page-table entry for the GPU address in r1. r0 = 1 returns the MMU's virtual and physical address widths.
+- **CT1QCFG** is set to 0 (its reset value: no empty-tile filtering) at load and after every reset, for a V3D that was already running.
+- **Replay (kit 7):**
+  - It now prints each BO's physical range and its 64 KB / 1 MB page entries from the GPU's page table, and flags any page beyond the MMU's physical width.
+  - It adds three runs: the Z store into the colour buffer's memory; the colour store into the Z buffer's memory (with no Z store); and the Z store into a new BO.
+  - These separate "the memory at &244000" from "storing Z".
+
 ## Kit 6 (V3DRender 0.06, unchanged) (15 November 2026)
 
 Kit 5 passed on the Pi: 64 and 4096 workgroups, every one wrote its number. So all QPUs run threads, and the idea that some QPUs never finish is ruled out.

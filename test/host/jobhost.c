@@ -280,6 +280,9 @@ sys_risc3d_info (const char **name, unsigned *flags, unsigned *ioctl_swi, const 
 const char *sys_risc3d_open (int *c, int *f) { (void) c; (void) f; return "no"; }
 void sys_risc3d_close (int c) { (void) c; }
 
+uint32_t sys_pte (uint32_t gpu) { return dev->pt[gpu >> 12]; }
+int sys_pa_width (void) { return dev->pa_width; }
+
 void
 sys_status (const char *also_to)
 {

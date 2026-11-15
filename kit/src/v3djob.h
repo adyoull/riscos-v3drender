@@ -13,6 +13,8 @@ int sys_ioctl (int file, uint32_t request, void *arg, const char **err);
 unsigned now_cs (void);
 void sys_status (const char *also_to);
 const uint32_t *sys_stats (void);	/* V3DRender_Info r8 */
+uint32_t sys_pte (uint32_t gpu);	/* V3DRender_Debug 0 (0.07): 0 if none */
+int sys_pa_width (void);		/* V3DRender_Debug 1; 0 if older */
 const char *sys_risc3d_info (const char **name, unsigned *flags, unsigned *ioctl_swi,
 			     const char **drm);
 const char *sys_risc3d_open (int *context, int *file);

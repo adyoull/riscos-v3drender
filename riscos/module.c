@@ -30,7 +30,7 @@
 #include "v3d_regs.h"
 #include "plat_pi4.h"
 
-#define VERSION 6			/* 0.06 */
+#define VERSION 7			/* 0.07 */
 #define SWI_BASE 0xC3D40
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -211,6 +211,22 @@ mod_swi (unsigned number, regs *r)
     case 4:
       v3d_gpu_reset_now (dev);
       return 0;
+    case 5:
+      /* V3DRender_Debug (0.07): r0 = 0: r1 = GPU address -> r0 = its PTE
+	 (0: none); r0 = 1: -> r0 = VA width, r1 = PA width (bits) */
+      if (r->r[0] == 0)
+	{
+	  uint32_t page = r->r[1] >> V3D_MMU_PAGE_SHIFT;
+	  r->r[0] = page < dev->area_pages ? dev->pt[page] : 0;
+	  return 0;
+	}
+      if (r->r[0] == 1)
+	{
+	  r->r[0] = (unsigned) dev->va_width;
+	  r->r[1] = (unsigned) dev->pa_width;
+	  return 0;
+	}
+      return ERR (err_swi);
     }
   return ERR (err_swi);
 }
