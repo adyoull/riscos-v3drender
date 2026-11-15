@@ -30,7 +30,7 @@
 #include "v3d_regs.h"
 #include "plat_pi4.h"
 
-#define VERSION 5			/* 0.05 */
+#define VERSION 6			/* 0.06 */
 #define SWI_BASE 0xC3D40
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -278,6 +278,7 @@ mod_final (int fatal)
       pi4_set_clock (clock_before, &now);
     }
   pi4_memory_free ();
+  pi4_dump_free ();
   plat_free (dev);
   dev = 0;
   return 0;
@@ -423,6 +424,20 @@ mod_command (int index, const char *tail, int argc)
 {
   if (!dev)
     return 0;
+  if (index == 2)
+    {
+      /* *V3DDump <file>: the first hung job's dump (0.06) */
+      uint32_t bytes;
+      void *d = pi4_dump (&bytes);
+      if (!d)
+	{
+	  write0 ("No job has hung since V3DRender was loaded.");
+	  newline ();
+	  return 0;
+	}
+      regs r = {{ 10, (unsigned) tail, 0xFFD, 0, (unsigned) d, (unsigned) d + bytes }};
+      return swix_regs (OS_File, &r);
+    }
   if (index == 1)
     {
       uint32_t hz, max = 0;

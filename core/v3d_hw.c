@@ -220,6 +220,59 @@ v3d_record_hang (struct v3d_dev *v3d, struct v3d_job *job)
     v3d->stats.first_hang = *h;
 }
 
+/* The first hung job's BOs as the GPU left them, with its registers,
+   for *V3DDump (0.06). Interrupts on; the job is still active (hung). */
+#define V3D_DUMP_MAX_BO (16u << 20)
+void
+v3d_dump_hang (struct v3d_dev *v3d, struct v3d_job *job)
+{
+  if (v3d->dumped || (job->q != V3D_BIN && job->q != V3D_RENDER))
+    return;
+  v3d->dumped = 1;
+  /* a bin job's BOs are held by its render job (the submit's last) */
+  struct v3d_job *r = job->q == V3D_BIN && job->a.cl.render ? job->a.cl.render : job;
+  uint32_t hwords = sizeof (struct v3d_hang) / 4;
+  uint32_t bytes = (V3D_DUMP_HEAD + hwords) * 4;
+  uint32_t n = r->nbos + r->noverflow;
+  for (uint32_t i = 0; i < n; i++)
+    {
+      int bo = i < r->nbos ? r->bos[i] : r->overflow[i - r->nbos];
+      uint32_t size = v3d->bos[bo].npages << V3D_MMU_PAGE_SHIFT;
+      bytes += 8 + (size <= V3D_DUMP_MAX_BO ? size : 0);
+    }
+  uint32_t *w = plat_dump_buffer (bytes);
+  if (!w)
+    return;
+  w[0] = 0x44443356;			/* "V3DD" */
+  w[1] = 0x31504d55;			/* "UMP1" */
+  w[2] = V3D_DUMP_HEAD;
+  w[3] = job->q;
+  w[4] = r->a.cl.start;			/* the render list */
+  w[5] = r->a.cl.end;
+  w[6] = r->a.cl.bstart;		/* the bin list */
+  w[7] = r->a.cl.bend;
+  w[8] = r->a.cl.qma;
+  w[9] = r->a.cl.qms;
+  w[10] = r->a.cl.qts;
+  w[11] = n;
+  const uint32_t *h = (const uint32_t *) &v3d->stats.last_hang;
+  for (uint32_t i = 0; i < hwords; i++)
+    w[V3D_DUMP_HEAD + i] = h[i];
+  uint32_t *p = w + V3D_DUMP_HEAD + hwords;
+  for (uint32_t i = 0; i < n; i++)
+    {
+      int bo = i < r->nbos ? r->bos[i] : r->overflow[i - r->nbos];
+      uint32_t size = v3d->bos[bo].npages << V3D_MMU_PAGE_SHIFT;
+      if (size > V3D_DUMP_MAX_BO)
+	size = 0;			/* too big to keep: listed only */
+      *p++ = v3d_bo_offset (v3d, bo);
+      *p++ = size;
+      const volatile uint32_t *src = (const volatile uint32_t *) v3d_bo_cpu (v3d, bo);
+      for (uint32_t k = 0; k < size / 4; k++)
+	*p++ = src[k];
+    }
+}
+
 /* After a hang: Linux's v3d_reset. The platform's reset line stands for
    reset_control_reset (or the bridge's SW_INIT on the 7278). */
 void

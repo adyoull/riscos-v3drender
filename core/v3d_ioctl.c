@@ -352,6 +352,11 @@ submit_cl (struct v3d_dev *v3d, int f, struct drm_v3d_submit_cl *args)
     return -V3D_ENOMEM;
   render->a.cl.start = args->rcl_start;
   render->a.cl.end = args->rcl_end;
+  render->a.cl.bstart = args->bcl_start;	/* for a hang's dump */
+  render->a.cl.bend = args->bcl_end;
+  render->a.cl.qma = args->qma;
+  render->a.cl.qms = args->qms;
+  render->a.cl.qts = args->qts;
   add_syncobj_dep (v3d, f, render, args->in_sync_rcl);
 
   if (args->bcl_start != args->bcl_end)

@@ -66,6 +66,9 @@ gcc -std=gnu11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined $INC -I
   -o out/jobhost kit/src/v3djob.c kit/src/clbuild.c test/host/jobhost.c $CORE
 out/jobhost | grep -E "passed|failed"
 out/jobhost hang | grep -E "passed|failed"
+python3 -B tools/v3ddump.py out/obj/hang.dump > out/obj/hang.txt
+grep -q "Hung: bin job" out/obj/hang.txt && grep -q "Wait on Semaphore" out/obj/hang.txt && grep -q "Set Base: address=0x213000" out/obj/hang.txt \
+  && grep -q "Clear Colors\|Tile Rendering Mode Cfg" out/obj/hang.txt && echo "v3ddump: ok" || { echo "v3ddump: FAIL"; exit 1; }
 AC="-std=gnu11 -O2 -mfpu=vfpv3 -mfloat-abi=hard -Wall -Wextra -Werror"
 ${T}gcc $AC -Iinclude -Ikit/src -static -o out/obj/v3djob.elf kit/src/v3djob.c \
   kit/src/v3djob_riscos.c kit/src/clbuild.c

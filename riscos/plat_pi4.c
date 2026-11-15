@@ -273,6 +273,44 @@ plat_gpu_reset (struct v3d_dev *v3d)
 
 /* ---- memory ---- */
 
+/* the hang dump (0.06): an ordinary dynamic area, replaced each time */
+static int dump_area;
+static void *dump_base;
+static uint32_t dump_size;
+
+void *
+plat_dump_buffer (uint32_t bytes)
+{
+  pi4_dump_free ();
+  regs r = {{ 0, (unsigned) -1, bytes, (unsigned) -1, DA_FLAG_NOT_DRAGGABLE,
+	      bytes, 0, 0, (unsigned) "V3DRender hang dump" }};
+  if (swix_regs (OS_DynamicArea, &r))
+    return 0;
+  dump_area = (int) r.r[1];
+  dump_base = (void *) r.r[3];
+  dump_size = bytes;
+  return dump_base;
+}
+
+void
+pi4_dump_free (void)
+{
+  if (!dump_area)
+    return;
+  regs r = {{ 1, (unsigned) dump_area }};
+  swix_regs (OS_DynamicArea, &r);
+  dump_area = 0;
+  dump_base = 0;
+  dump_size = 0;
+}
+
+void *
+pi4_dump (uint32_t *bytes)
+{
+  *bytes = dump_size;
+  return dump_base;
+}
+
 oserror *
 pmp_create (struct pmp *a, const char *name, uint32_t pages)
 {

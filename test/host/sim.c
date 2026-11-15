@@ -111,6 +111,8 @@ void plat_barrier (void) { }
 unsigned plat_irq_off (void) { return 0; }
 void plat_irq_restore (unsigned s) { (void) s; }
 void *plat_alloc (size_t n) { return calloc (1, n); }
+void *dump_buf; uint32_t dump_bytes;
+void *plat_dump_buffer (uint32_t n) { free (dump_buf); dump_bytes = n; return dump_buf = calloc (1, n); }
 void plat_free (void *p) { free (p); }
 void plat_log (struct v3d_dev *v3d, const char *m, uint32_t v) { (void) v3d; (void) m; (void) v; logs++; }
 

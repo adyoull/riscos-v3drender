@@ -35,6 +35,8 @@ void plat_barrier (void) { }
 unsigned plat_irq_off (void) { return 0; }
 void plat_irq_restore (unsigned s) { (void) s; }
 void *plat_alloc (size_t n) { return calloc (1, n); }
+void *dump_buf; uint32_t dump_bytes;
+void *plat_dump_buffer (uint32_t n) { free (dump_buf); dump_bytes = n; return dump_buf = calloc (1, n); }
 void plat_free (void *p) { free (p); }
 void plat_log (struct v3d_dev *v, const char *m, uint32_t x) { (void) v; printf ("    [log] %s %x\n", m, x); }
 
@@ -274,4 +276,14 @@ sys_status (const char *also_to)
   printf ("[sim] render jobs %u, bin jobs %u, timeouts %u, resets %u, pages in use %u\n",
 	  dev->stats.jobs[V3D_RENDER], dev->stats.jobs[V3D_BIN], dev->stats.timeouts,
 	  resets, dev->pages_used);
+  if (dump_buf)
+    {
+      /* the hang's dump, for tools/v3ddump.py (build.sh) */
+      FILE *f = fopen ("out/obj/hang.dump", "wb");
+      if (f)
+	{
+	  fwrite (dump_buf, 1, dump_bytes, f);
+	  fclose (f);
+	}
+    }
 }

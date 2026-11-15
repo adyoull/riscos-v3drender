@@ -186,6 +186,10 @@ release_job (struct v3d_dev *v3d, struct v3d_job *job)
 void
 v3d_gpu_reset_now (struct v3d_dev *v3d)
 {
+  /* the first hung job's BOs, before anything is released (0.06) */
+  for (int q = 0; q < V3D_HW_QUEUES; q++)
+    if (v3d->active[q] && v3d->active[q]->guilty)
+      v3d_dump_hang (v3d, v3d->active[q]);
   unsigned s = plat_irq_off ();
   v3d->reset_needed = 0;
   v3d_reset (v3d);

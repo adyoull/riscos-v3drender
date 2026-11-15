@@ -23,4 +23,8 @@ struct pi4_log { const char *msg; uint32_t value; };
 extern struct pi4_log pi4_log[PI4_LOG];
 extern unsigned pi4_log_next;
 
+/* the hang dump (0.06) */
+void pi4_dump_free (void);
+void *pi4_dump (uint32_t *bytes);
+
 #endif

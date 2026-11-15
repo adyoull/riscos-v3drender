@@ -30,5 +30,8 @@ void plat_wait (void);			/* until an interrupt, or a moment */
 void *plat_alloc (size_t bytes);	/* zeroed; not with interrupts off */
 void plat_free (void *p);
 void plat_log (struct v3d_dev *v3d, const char *msg, uint32_t value);
+/* memory for the hang dump (0.06), replacing any earlier one; 0 if none
+   can be had. Not with interrupts off. */
+void *plat_dump_buffer (uint32_t bytes);
 
 #endif

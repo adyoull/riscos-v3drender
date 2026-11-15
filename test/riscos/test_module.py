@@ -61,6 +61,7 @@ class Pi4(Machine):
         self.hal_clears = 0
         uc.hook_add(1 << 2, self._code, begin=HAL_CLEAR, end=HAL_CLEAR)  # UC_HOOK_CODE
         uc.mem_map(IRQ_STACK, 0x10000)
+        self.saved = None
         self.areas = {}          # number -> dict(base, pages, claimed{idx: pa}, mapped set)
         self.area_next = AREA_BASE
         self.phys_next = 0
@@ -187,6 +188,10 @@ class Pi4(Machine):
                         out(1, pa >> 32)
                         return
                 return self._fail(number, 0xFC, "bad address")
+        if base == 0x08 and r[0] == 10:           # OS_File 10: save
+            name = bytes(self.uc.mem_read(r[1], 64)).split(b"\r")[0].split(b"\0")[0].decode()
+            self.saved = (name, r[2], r[5] - r[4])
+            return
         if base == 0x66:                          # OS_DynamicArea
             return self.dynamic_area(number, r, out)
         if base == 0x42:                          # OS_ReadMonotonicTime
@@ -227,6 +232,17 @@ class Pi4(Machine):
 
     def dynamic_area(self, number, r, out):
         reason = r[0]
+        if reason == 0 and not r[4] & (1 << 20):
+            # an ordinary area (the hang dump): memory mapped at once
+            n = 300 + len(self.areas)
+            size = (r[5] + 0xFFFFF) & ~0xFFFFF
+            self.uc.mem_map(self.area_next, size)
+            self.areas[n] = dict(base=self.area_next, pages=0, claimed={}, mapped={},
+                                 name=self.cstr(r[8]), size=r[2])
+            out(1, n)
+            out(3, self.area_next)
+            self.area_next += size
+            return
         if reason == 0:
             check(r[4] & (1 << 20) and r[4] & (1 << 8), "a PMP with specific pages")
             n = 300 + len(self.areas)
@@ -312,7 +328,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 5 and out[8] != 0, "version 0.05, statistics in r8")
+    check(out[0] == 6 and out[8] != 0, "version 0.06, statistics in r8")
     stats_addr = out[8]
 
     # RISC3D: registered as a DRM device; its calls open, describe, close
@@ -415,6 +431,22 @@ def main():
     check(err is None and "First hang: bin job, list &%08X" % off2 in m.output
           and "at &%08X: &00000011 &00000012" % off2 in m.output, "*V3DRender shows the hang")
     print("  " + m.output.replace("\n", "\n  ").rstrip())
+    dump = [a for a in m.areas.values() if a["name"] == "V3DRender hang dump"]
+    check(len(dump) == 1, "the hang dump area")
+    if dump:
+        d = dump[0]
+        w = struct.unpack("<12I", bytes(m.uc.mem_read(d["base"], 48)))
+        check(w[0] == 0x44443356 and w[1] == 0x31504d55 and w[3] == 0 and w[6] == off2
+              and w[11] == 1, "the dump's header: %s" % [hex(x) for x in w])
+        # after the hang words: the BO's address, size, then its contents
+        hw = 12 + 32
+        bo = struct.unpack("<4I", bytes(m.uc.mem_read(d["base"] + hw * 4, 16)))
+        check(bo[0] == off2 and bo[1] == 4096 and bo[2] == 0x11 and bo[3] == 0x12,
+              "the dump holds the BO: %s" % [hex(x) for x in bo])
+        m.files = {}
+        err = mod.command("V3DDump", "RAM::0.$.Dump", 1)
+        check(err is None and m.saved and m.saved[0] == "RAM::0.$.Dump" and m.saved[1] == 0xFFD
+              and m.saved[2] == d["size"], "*V3DDump saves it: %s" % (m.saved,))
 
     out, e = mod.swi(2, {0: f})
     check(e is None, "V3DRender_Close")

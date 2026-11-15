@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.06: *V3DDump, the first hung job's buffers (15 November 2026)
+
+0.05's registers from V3DTri: every render job stops in Mesa's generic
+tile list, just after End of Loads, with the pixel stage holding quads
+for the shader processors. About 2.5 tiles of the first frame are drawn.
+To see the lists, shaders and tile lists as the GPU had them:
+
+- When the first job hangs after loading, before the reset, V3DRender
+  copies every BO the job held into a "V3DRender hang dump" dynamic area,
+  along with the registers and the job's lists, tile alloc and tile
+  state. That covers the shaders, uniforms, vertex data, the
+  binner-written tile lists, the tile state and any overflow BOs. A bin
+  job's BOs are the ones its render job holds. BOs bigger than 16 MB
+  are only listed.
+- `*V3DDump <file>` saves it (type &FFD). `tools/v3ddump.py` prints it:
+  - which BO each of CA, RA and BPCA is in;
+  - the render list, the generic tile list it names, and the bin list,
+    decoded with Mesa's v3d_packet.xml (addresses unpacked as Mesa
+    does);
+  - a hex dump around CA, and each tile's first block in tile alloc.
+  `-x DIR` writes out each BO.
+- Render jobs keep their bin list, qma, qms and qts for the dump.
+- Tests:
+  - The emulator test hangs a bin job and checks the dump's header and
+    the BO's contents, and that `*V3DDump` saves the right size.
+  - build.sh runs v3ddump.py on the simulated hang's dump.
+
 ## 0.05: what the GPU was doing when a job hung (15 November 2026)
 
 riscos-mesa's first Mesa program on V3DRender (V3DTri, Mesa 26.1.6's v3d

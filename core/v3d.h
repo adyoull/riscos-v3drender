@@ -81,7 +81,7 @@ struct v3d_job
   int file;
   union
   {
-    struct { uint32_t start, end, qma, qms, qts; struct v3d_job *render; } cl;
+    struct { uint32_t start, end, qma, qms, qts, bstart, bend; struct v3d_job *render; } cl;
     struct drm_v3d_submit_tfu tfu;
     struct drm_v3d_submit_csd csd;
   } a;
@@ -173,6 +173,7 @@ struct v3d_dev
   uint8_t sync_file_used[V3D_MAX_SYNC_FILES];
 
   struct v3d_stats stats;
+  int dumped;				/* the first hang's dump is taken */
 };
 
 /* Errors are Linux's errno values, negated. */
@@ -204,6 +205,14 @@ void v3d_irq_disable (struct v3d_dev *v3d);
 int v3d_irq (struct v3d_dev *v3d);	/* the interrupt: 1 if it was ours */
 void v3d_reset (struct v3d_dev *v3d);
 void v3d_record_hang (struct v3d_dev *v3d, struct v3d_job *job);
+void v3d_dump_hang (struct v3d_dev *v3d, struct v3d_job *job);
+
+/* The dump of the first hung job (0.06), what *V3DDump saves: words.
+   "V3DD" "UMP1", header words (V3D_DUMP_HEAD), the queue, the list
+   start and end, the bin list start and end, qma, qms, qts, the number
+   of BOs, the words of struct v3d_hang, then per BO (the job's, then
+   its binner overflow BOs): GPU address, bytes, contents. */
+#define V3D_DUMP_HEAD 12
 void v3d_idle_sms (struct v3d_dev *v3d);
 void v3d_power_off_sms (struct v3d_dev *v3d);
 void v3d_run_job (struct v3d_dev *v3d, struct v3d_job *job);
