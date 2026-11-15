@@ -32,6 +32,8 @@ nop (void)
   return i;
 }
 
+static int emit (FILE *f, struct v3d_qpu_instr *p, int n);
+
 int
 main (int argc, char **argv)
 {
@@ -56,6 +58,44 @@ main (int argc, char **argv)
   fprintf (f, "/* csd_prog.h: made by tools/qpu/mkcsd (Mesa's QPU packer), V3D 4.2.\n"
 	      "   Uniforms: the value, then the address to write it to. */\n"
 	      "static const uint64_t csd_prog[] = {\n");
+  if (emit (f, p, n))
+    return 1;
+
+  /* csd_wide (kit 5): each workgroup writes its payload (rf0: workgroup
+     x | y << 16, as Mesa's cs_payload[0] on 4.2) to base + 4 * rf0, so a
+     dispatch of many workgroups shows whether every QPU runs threads.
+     Uniforms: 2 (the shift), then the base address. */
+  n = 0;
+  i = nop (); i.sig.ldunif = true; p[n++] = i;		/* r5 = 2 */
+  p[n++] = nop ();
+  i = nop (); i.alu.add.op = V3D_QPU_A_SHL;		/* r1 = rf0 << r5 */
+  i.alu.add.waddr = V3D_QPU_WADDR_R1; i.alu.add.magic_write = true;
+  i.alu.add.a.mux = V3D_QPU_MUX_A; i.raddr_a = 0; i.alu.add.b.mux = V3D_QPU_MUX_R5; p[n++] = i;
+  i = nop (); i.sig.ldunif = true; p[n++] = i;		/* r5 = the base */
+  p[n++] = nop ();
+  i = nop (); i.alu.add.op = V3D_QPU_A_ADD;		/* r2 = r5 + r1 */
+  i.alu.add.waddr = V3D_QPU_WADDR_R2; i.alu.add.magic_write = true;
+  i.alu.add.a.mux = V3D_QPU_MUX_R5; i.alu.add.b.mux = V3D_QPU_MUX_R1; p[n++] = i;
+  i = nop (); i.alu.mul.op = V3D_QPU_M_MOV;		/* tmud = rf0 */
+  i.alu.mul.waddr = V3D_QPU_WADDR_TMUD; i.alu.mul.a.mux = V3D_QPU_MUX_A; i.raddr_a = 0; p[n++] = i;
+  i = nop (); i.alu.mul.op = V3D_QPU_M_MOV;		/* tmua = r2: the write */
+  i.alu.mul.waddr = V3D_QPU_WADDR_TMUA; i.alu.mul.a.mux = V3D_QPU_MUX_R2; p[n++] = i;
+  i = nop (); i.alu.add.op = V3D_QPU_A_TMUWT; p[n++] = i;
+  i = nop (); i.sig.thrsw = true; p[n++] = i;
+  p[n++] = nop ();
+  p[n++] = nop ();
+  fprintf (f, "\n/* Uniforms: 2, then the base address. */\n"
+	      "static const uint64_t csd_wide[] = {\n");
+  if (emit (f, p, n))
+    return 1;
+  fclose (f);
+  (void) argc;
+  return 0;
+}
+
+static int
+emit (FILE *f, struct v3d_qpu_instr *p, int n)
+{
   for (int k = 0; k < n; k++)
     {
       uint64_t w;
@@ -69,7 +109,5 @@ main (int argc, char **argv)
       printf ("%2d %016llx  %s\n", k, (unsigned long long) w, d);
     }
   fprintf (f, "};\n");
-  fclose (f);
-  (void) argc;
   return 0;
 }

@@ -328,6 +328,59 @@ test_csd (void)
   bo_free (&out);
 }
 
+/* Test 8 (kit 5): a compute dispatch of many workgroups, each writing
+   its own number, so that threads run on every QPU. Mesa's programs on
+   the Pi 4 draw a few tiles, then stop with pixels waiting for fragment
+   shaders; if some QPUs never finish a thread, this stops too. */
+static void
+test_csd_wide (unsigned groups)
+{
+  struct bo code, unif, out;
+  if (bo_new (&code, 4096) || bo_new (&unif, 4096) || bo_new (&out, groups * 4 + 4096))
+    {
+      check (0, "buffers for the compute job");
+      return;
+    }
+  memcpy (code.cpu, csd_wide, sizeof csd_wide);
+  uint32_t *o = (uint32_t *) out.cpu;
+  for (unsigned i = 0; i < groups + 1024; i++)
+    o[i] = 0xDEADBEEF;
+  uint32_t *u = (uint32_t *) unif.cpu;
+  u[0] = 2;
+  u[1] = out.gpu;
+  uint32_t handles[3] = { code.handle, unif.handle, out.handle };
+  struct drm_v3d_submit_csd c = {
+    .cfg = { groups << 16, 1u << 16, 1u << 16,
+	     (1u << 8) | (0u << 12) | 16,		/* 1 per supergroup, 1 batch, 16 each */
+	     groups - 1,				/* batches - 1 */
+	     code.gpu | 4 | 2,				/* propagate NaNs; single segment */
+	     unif.gpu },
+    .bo_handles = (uintptr_t) handles, .bo_handle_count = 3,
+    .out_sync = sync,
+  };
+  unsigned t0 = now_cs ();
+  int r = ioctl_ (DRM_IOCTL_V3D_SUBMIT_CSD, &c);
+  int w8 = r == 0 ? wait_sync (200) : r;
+  char what[120];
+  snprintf (what, sizeof what, "%u workgroups done in %u cs (no reset)", groups, now_cs () - t0);
+  check (r == 0 && w8 == 0 && now_cs () - t0 < 40, what);
+  unsigned wrong = 0, first = 0;
+  for (unsigned i = 0; i < groups; i++)
+    if (o[i] != i && !wrong++)
+      first = i;
+  if (wrong)
+    printf ("    %u workgroups didn't write theirs; the first is %u (reads &%08X)\n",
+	    wrong, first, o[first]);
+  check (!wrong, "every workgroup wrote its number");
+  unsigned others = 0;
+  for (unsigned i = groups; i < groups + 1024; i++)
+    others += o[i] != 0xDEADBEEF;
+  check (!others, "and nothing else");
+  bo_free (&code);
+  bo_free (&unif);
+  bo_free (&out);
+}
+
 /* Test 6 (kit 3) gave the binner 8 KB for a 1080p frame: it didn't run out
    on the Pi 4, because a cleared frame has no primitives and the tile
    lists' first blocks aren't taken from that memory. Overflow needs drawn
@@ -454,6 +507,9 @@ main (int argc, char **argv)
       test_tfu ("UIF with XOR", 256, 256, 7, 2);
       printf ("\n5. A compute job (CSD: GLES 3.1 compute shaders)\n");
       test_csd ();
+      printf ("\n8. Compute on every QPU: 64, then 4096 workgroups\n");
+      test_csd_wide (64);
+      test_csd_wide (4096);
       printf ("\n7. Through RISC3D\n");
       test_risc3d ();
       uint32_t const *st = stats ();

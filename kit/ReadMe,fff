@@ -1,21 +1,16 @@
-V3DRender 0.04: kit 4, the compute job again
+V3DRender 0.06: kit 5, compute on every QPU
 ============================================
 
-Kit 3 on the Pi 4: the TFU (all three tiled layouts) and RISC3D passed.
-Two tests failed, and both were the test's fault, not V3DRender's:
+Mesa's programs (riscos-mesa's V3DTri) draw a few tiles on the Pi 4 and
+then stop, with pixels waiting for the GPU's processors (QPUs) to run
+their fragment shaders. Mesa's lists and shaders look right. Kit 4's
+compute job ran on one QPU only. Kit 5 adds test 8: compute jobs of 64,
+then 4096 workgroups, each of which writes its own number, so that
+threads run on every QPU. If some QPUs never finish a thread, test 8
+stops the same way Mesa's frames do, and the numbers that didn't arrive
+show which work went missing.
 
-- The compute job never ended, so V3DRender reset the GPU after a
-  second. The test program has only one thread switch, which is its end.
-  The GPU has to be told that with a "single segment" flag (bit 1 of
-  the program's address word), as Mesa does for compute programs.
-  Without it, the GPU took that thread switch as an ordinary one and ran
-  on past the end. Kit 4 sets the flag.
-- The binner given 8 KB for a 1080p frame didn't run out: a cleared frame
-  draws nothing, so its tile lists never grow. Running the binner out of
-  memory needs drawn triangles, which need shaders, so that test waits
-  for Mesa and has been taken out (there is no test 6).
-
-The V3DRender module is the same 0.04 as in kit 3. Only V3DJob changed.
+The V3DRender module is 0.06, as you have loaded.
 
 Before you start
 - A Pi 4, Pi 400 or CM4 with RISC OS 5.30 or later. V3DDriver not
@@ -23,8 +18,8 @@ Before you start
 
 The test
 1. Double-click Check. It loads V3DRender 0.04 (replacing 0.02 or 0.03
-   if loaded) and RISC3D 0.03, then runs V3DCheck and V3DJob. Tests 1-2
-   are kit 2's, 4 and 7 passed in kit 3, and 5 is the one to watch. Both programs write to Results, and
+   if loaded) and RISC3D 0.03, then runs V3DCheck and V3DJob. Tests 1-7
+   passed before; 8 is new. Both programs write to Results, and
    *V3DRender's figures are added at the end.
 2. Optional: double-click HangTest again (as in kit 2).
 3. Send Results back.

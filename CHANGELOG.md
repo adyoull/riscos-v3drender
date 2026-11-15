@@ -1,5 +1,17 @@
 # Changelog
 
+## Kit 5 (V3DRender 0.06, unchanged) (15 November 2026)
+
+riscos-mesa's test 4 on the Pi: Mesa's first job decodes as it should.
+- The RCL has the four Tile Rendering Mode Cfg sub-ids and 4x4 supertiles; the generic tile list stores colour (UIF) and Z.
+- The GL shader state record has the fragment shader 4-way threadable and not single segment, and the clear shader is `thrsw; thrsw; tlbu; thrsw`, as on Linux.
+- With every shader limited to 2 threads it still hangs, so thread switching is not the cause.
+- The render job stops at supertile (1,0): RA is &38D075, after the fifth Supertile Coordinates.
+
+Kit 4's compute job used one QPU. Kit 5's test 8 sends 64, then 4096 workgroups of a program (`csd_wide`, from Mesa's packer in `tools/qpu/mkcsd`) that writes each workgroup's number (rf0, Mesa's cs_payload[0] on 4.2) at base + 4 * number, so that every QPU runs threads. The simulated GPU in jobhost runs it too.
+
+`tools/v3ddump.py` now decodes the GL Shader State record and attribute records that the bin list names, and reads Mesa's field starts given in bytes ("3b").
+
 ## 0.06: *V3DDump, the first hung job's buffers (15 November 2026)
 
 0.05's registers from V3DTri: every render job stops in Mesa's generic

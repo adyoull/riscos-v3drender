@@ -17,6 +17,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 Copyright (c) 2026 Andrew Youll
 """
 import os
+import re
 import struct
 import sys
 import xml.etree.ElementTree as ET
@@ -28,6 +29,23 @@ HANG = ["q", "start", "end", "ct0cs", "ct0ca", "ct0ea", "ct0ra", "ct1cs", "ct1ca
 QUEUES = ["bin", "render", "TFU", "compute", "cache clean"]
 
 
+def num(s):
+    """Mesa's XML gives some field starts in bytes ("3b")."""
+    return int(s[:-1]) * 8 if s.endswith("b") else int(s)
+
+
+def load_structs(path):
+    def ok(e):
+        return int(e.get("min_ver", "0")) <= VER <= int(e.get("max_ver", "999"))
+    out = {}
+    for st in ET.parse(path).getroot().iter("struct"):
+        if ok(st):
+            fields = [f for f in st.iter("field") if ok(f)]
+            bits = max([num(f.get("start")) + int(f.get("size")) for f in fields], default=0)
+            out[st.get("name")] = (fields, (bits + 7) // 8)
+    return out
+
+
 def load_packets(path):
     def ok(e):
         return int(e.get("min_ver", "0")) <= VER <= int(e.get("max_ver", "999"))
@@ -36,7 +54,7 @@ def load_packets(path):
         if not ok(p):
             continue
         fields = [f for f in p.iter("field") if ok(f)]
-        bits = max([int(f.get("start")) + int(f.get("size")) for f in fields], default=0)
+        bits = max([num(f.get("start")) + int(f.get("size")) for f in fields], default=0)
         packets.setdefault(int(p.get("code")), []).append((p.get("name"), fields, 1 + (bits + 7) // 8))
     return packets
 
@@ -45,7 +63,7 @@ def fields_text(fields, payload):
     v = int.from_bytes(payload, "little")
     out = []
     for f in fields:
-        s, n = int(f.get("start")), int(f.get("size"))
+        s, n = num(f.get("start")), int(f.get("size"))
         x = (v >> s) & ((1 << n) - 1)
         if f.get("minus_one") == "true":
             x += 1
@@ -176,7 +194,6 @@ def main():
     print("Render list:")
     rl = decode(packets, mem, rstart, rend)
     print("\n".join(rl))
-    import re
     for l in rl:
         m = re.search(r"Generic Tile List: start=(0x[0-9a-f]+), end=(0x[0-9a-f]+)", l)
         if m:
@@ -188,7 +205,24 @@ def main():
     if bstart != bend:
         print()
         print("Bin list:")
-        print("\n".join(decode(packets, mem, bstart, bend)))
+        bl = decode(packets, mem, bstart, bend)
+        print("\n".join(bl))
+        structs = load_structs(xml)
+        for l in bl:
+            m = re.search(r"GL Shader State: address=(0x[0-9a-f]+), number of attribute arrays=(\d+)", l)
+            if not m:
+                continue
+            a = int(m.group(1), 16)
+            for name, count in (("GL Shader State Record", 1),
+                                ("GL Shader State Attribute Record", int(m.group(2)))):
+                fields, length = structs[name]
+                for _ in range(count):
+                    data = mem.read(a, length)
+                    print()
+                    print("%s at %08X:" % (name, a))
+                    if data:
+                        print("  " + fields_text(fields, data).replace(", ", "\n  "))
+                    a += length
     ca = h["ct1ca"] if q == 1 else h["ct0ca"]
     print()
     print("Around the hung list's CA (%08X):" % ca)

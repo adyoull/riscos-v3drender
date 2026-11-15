@@ -158,6 +158,17 @@ v3d_wr (struct v3d_dev *v, int bank, uint32_t off, uint32_t val)
     {
       uint32_t code = regs[bank][(V3D_CSD_QUEUED_CFG0 (42) + 20) / 4] & ~7u;
       uint32_t unif = regs[bank][(V3D_CSD_QUEUED_CFG0 (42) + 24) / 4];
+      if (!memcmp (va (code), csd_wide, sizeof csd_wide))
+	{
+	  /* every workgroup writes its number at base + 4 * number */
+	  uint32_t groups = val >> 16, base;	/* (CFG0, being written) */
+	  memcpy (&base, va (unif + 4), 4);
+	  for (uint32_t g = 0; g < groups; g++)
+	    memcpy (va (base + 4 * g), &g, 4);
+	  csd_hung = !(regs[bank][(V3D_CSD_QUEUED_CFG0 (42) + 20) / 4] & 2);
+	  busy[V3D_CSD] = 1;
+	  return;
+	}
       if (memcmp (va (code), csd_prog, sizeof csd_prog))
 	printf ("SIM: not csd_prog\n"), exit (2);
       /* csd_prog's one thrsw is its end only if it starts in the final
