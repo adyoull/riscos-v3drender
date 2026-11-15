@@ -1,5 +1,13 @@
 # Changelog
 
+## Kit 10 (V3DRender 0.08, unchanged) (15 November 2026)
+
+Kit 9 on the Pi:
+- Loading colour, or Z+stencil, into the tile (TLB reads) finishes.
+- Storing Z (9), Z+stencil (11) or stencil (10) hangs, every time.
+
+The Z store's Output Image Format is 0, srgb8_alpha8, a colour format. Mesa's v3d format table gives a depth surface d24s8 (43) for S8_UINT_Z24_UNORM, and gives 0 only for a format it has no row for. So V3DTri's depth buffer is probably a format the v3d driver doesn't render to (Z24_UNORM_S8_UINT, say). Replay adds two runs: the Z store in format 43, and Z+stencil in format 43.
+
 ## Kit 9 (V3DRender 0.08, unchanged) (15 November 2026)
 
 Kit 8 on the Pi:

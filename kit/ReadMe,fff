@@ -1,23 +1,18 @@
-V3DRender 0.08: kit 9, Z store or tile-buffer reads?
-=====================================================
+V3DRender 0.08: kit 10, the Z store's format
+=============================================
 
-Kit 8: turning the V3D's power domain off and on through the firmware
-changed nothing; Mesa's Z store still never finishes, wherever it
-writes.
+Kit 9: loading colour or Z+stencil into the tile works, so the tile
+buffer reads memory fine; every store of the depth buffer hangs, as Z,
+Z+stencil or stencil. The colour store never does.
 
-Mesa's depth buffer is Z24S8 (depth and stencil in one word), and its
-job stores only Z into it. To keep the stencil bits, the GPU may have
-to read the buffer's memory back while it stores. V3DJob's own tests
-have never made the tile buffer read memory. Replay now also runs the
-job:
-
-  - storing Z+stencil (11) instead of Z (9);
-  - storing stencil (10) instead of Z;
-  - loading colour into the tile from memory first (no Z store);
-  - loading Z+stencil into the tile from memory first (no Z store).
-
-If the loads hang too, the GPU's tile buffer can't read memory here;
-if Z+stencil stores work, it's the partial (read-back) store.
+Looking at the store again: its "output image format" is 0, which is a
+colour format (srgb8_alpha8). Mesa's own format table gives depth
+formats d24s8 (43) and so on; it only gives 0 for a format the table
+has no row for. So the depth buffer riscos-mesa's V3DTri asked for may
+be one Mesa's v3d driver doesn't know as a render target, and the GPU
+waits for ever on a depth store in a colour format. Replay adds two
+runs: the Z store in format d24s8, and as Z+stencil in d24s8. If they
+finish, it's riscos-mesa's depth format, not V3DRender.
 
 Before you start
 - A Pi 4, Pi 400 or CM4 with RISC OS 5.30 or later. V3DDriver not

@@ -587,8 +587,8 @@ gtl_len (uint8_t op)
 
 enum { NO_CHANGE, NO_Z_STORE, NO_COLOUR_STORE, NO_STORES, NO_PRIMITIVES,
        FS_NOT_4WAY, NO_SCOREBOARD, Z_TO_COLOUR_BO, COLOUR_TO_Z_BO, Z_TO_SPARE_BO,
-       Z_AS_ZSTENCIL, Z_AS_STENCIL, LOAD_COLOUR, LOAD_ZS,
-       LAST_CHANGE = LOAD_ZS };
+       Z_AS_ZSTENCIL, Z_AS_STENCIL, LOAD_COLOUR, LOAD_ZS, Z_FORMAT_D24S8, ZS_FORMAT_D24S8,
+       LAST_CHANGE = ZS_FORMAT_D24S8 };
 static const char *const change_name[] = {
   "as Mesa sent it", "without the Z store", "without the colour store",
   "without either store", "without its primitives (no Branch to Implicit Tile List)",
@@ -599,7 +599,9 @@ static const char *const change_name[] = {
   "with the Z store storing Z+stencil (11) instead of Z (9)",
   "with the Z store storing stencil (10) instead of Z (9)",
   "loading colour into the tile first (a TLB read), with no Z store",
-  "loading Z+stencil into the tile first (a TLB read), with no Z store" };
+  "loading Z+stencil into the tile first (a TLB read), with no Z store",
+  "with the Z store's output image format d24s8 (43) instead of 0",
+  "with the Z store as Z+stencil (11) in format d24s8 (43)" };
 
 /* the GL Shader State record the bin list names (opcode 64) */
 static uint8_t *
@@ -715,6 +717,17 @@ replay_run (int change)
   if ((change == Z_AS_ZSTENCIL || change == Z_AS_STENCIL) && g && zk >= 0)
     {
       g[zk + 1] = (uint8_t) ((g[zk + 1] & 0xF0) | (change == Z_AS_ZSTENCIL ? 11 : 10));
+      changed = 1;
+    }
+  if ((change == Z_FORMAT_D24S8 || change == ZS_FORMAT_D24S8) && g && zk >= 0)
+    {
+      /* Output Image Format, bits 12-17 of the payload: d24s8 = 43, as
+	 Mesa's format table gives S8_UINT_Z24_UNORM (V3DTri's store has 0,
+	 srgb8_alpha8: a format Mesa only gives when it has no table entry) */
+      g[zk + 2] = (uint8_t) ((g[zk + 2] & 0x0F) | ((43 & 15) << 4));
+      g[zk + 3] = (uint8_t) ((g[zk + 3] & ~3u) | (43 >> 4));
+      if (change == ZS_FORMAT_D24S8)
+	g[zk + 1] = (uint8_t) ((g[zk + 1] & 0xF0) | 11);
       changed = 1;
     }
   if ((change == LOAD_COLOUR || change == LOAD_ZS) && g && lk >= 0 && ck >= 0 && zk >= 0
