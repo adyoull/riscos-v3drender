@@ -251,6 +251,7 @@ v3d_service (struct v3d_dev *v3d)
 	      else
 		{
 		  v3d->stats.timeouts++;
+		  v3d_record_hang (v3d, job);
 		  job->guilty = 1;
 		  v3d->reset_needed = 1;
 		}

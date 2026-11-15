@@ -112,11 +112,27 @@ struct v3d_file
 
 /* (V3DRender_Info r8 points at this: its layout is part of the
    interface for tests; add to the end only) */
+/* What the GPU was doing when a job was found hung (0.05), read just
+   before the reset: which queue, the job's list, the control list
+   executors' registers, the error and debug registers, and the list
+   words around the hung queue's current address (0 where no buffer). */
+struct v3d_hang
+{
+  uint32_t q, start, end;		/* q: V3D_BIN.. (~0: none yet) */
+  uint32_t ct0cs, ct0ca, ct0ea, ct0ra, ct1cs, ct1ca, ct1ea, ct1ra;
+  uint32_t pcs, bfc, rfc, err_stat, fdbgo, fdbgb, fdbgr, fdbgs;
+  uint32_t bpca, bpcs, bpoa, bpos;	/* the binner's memory */
+  uint32_t words_at;			/* GPU address of words[0] */
+  uint32_t words[8];			/* CA - 16 .. CA + 16 */
+};
+
+/* V3DRender_Info r8 points here: add to the end only */
 struct v3d_stats
 {
   uint32_t jobs[V3D_NQ], irqs, irqs_empty, overflows, overflow_misses;
   uint32_t mmu_errors, mmu_last_addr, mmu_last_client, mmu_last_sts;
   uint32_t resets, timeouts, gmp_violations;
+  struct v3d_hang first_hang, last_hang;	/* 0.05 */
 };
 
 struct v3d_dev
@@ -187,6 +203,7 @@ void v3d_irq_enable (struct v3d_dev *v3d);
 void v3d_irq_disable (struct v3d_dev *v3d);
 int v3d_irq (struct v3d_dev *v3d);	/* the interrupt: 1 if it was ours */
 void v3d_reset (struct v3d_dev *v3d);
+void v3d_record_hang (struct v3d_dev *v3d, struct v3d_job *job);
 void v3d_idle_sms (struct v3d_dev *v3d);
 void v3d_power_off_sms (struct v3d_dev *v3d);
 void v3d_run_job (struct v3d_dev *v3d, struct v3d_job *job);
@@ -211,6 +228,7 @@ int64_t v3d_now_ns (void);
 
 /* v3d_bo.c: buffers */
 int v3d_bo_create (struct v3d_dev *v3d, uint32_t bytes, int *bo_out);
+int v3d_page_used (struct v3d_dev *v3d, uint32_t page);
 void v3d_bo_get (struct v3d_dev *v3d, int bo);
 void v3d_bo_put (struct v3d_dev *v3d, int bo);	/* not with interrupts off */
 int v3d_bo_init (struct v3d_dev *v3d);

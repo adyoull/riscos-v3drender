@@ -712,6 +712,7 @@ v3d_init (struct v3d_dev *v3d)
       v3d->jobs[i].next = v3d->free_jobs;
       v3d->free_jobs = &v3d->jobs[i];
     }
+  v3d->stats.first_hang.q = v3d->stats.last_hang.q = ~0u;	/* none yet */
   int ret = v3d_bo_init (v3d);
   if (ret)
     return ret;

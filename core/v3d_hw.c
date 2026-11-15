@@ -176,6 +176,50 @@ v3d_invalidate_caches (struct v3d_dev *v3d)
   v3d_invalidate_slices (v3d, 0);
 }
 
+/* The registers when a job is found hung, for *V3DRender (0.05) */
+void
+v3d_record_hang (struct v3d_dev *v3d, struct v3d_job *job)
+{
+  struct v3d_hang *h = &v3d->stats.last_hang;
+  h->q = job->q;
+  h->start = h->end = 0;
+  if (job->q == V3D_BIN || job->q == V3D_RENDER)
+    {
+      h->start = job->a.cl.start;
+      h->end = job->a.cl.end;
+    }
+  h->ct0cs = V3D_CORE_READ (0, V3D_CLE_CTNCS (0));
+  h->ct0ca = V3D_CORE_READ (0, V3D_CLE_CTNCA (0));
+  h->ct0ea = V3D_CORE_READ (0, V3D_CLE_CTNEA (0));
+  h->ct0ra = V3D_CORE_READ (0, V3D_CLE_CTNRA (0));
+  h->ct1cs = V3D_CORE_READ (0, V3D_CLE_CTNCS (1));
+  h->ct1ca = V3D_CORE_READ (0, V3D_CLE_CTNCA (1));
+  h->ct1ea = V3D_CORE_READ (0, V3D_CLE_CTNEA (1));
+  h->ct1ra = V3D_CORE_READ (0, V3D_CLE_CTNRA (1));
+  h->pcs = V3D_CORE_READ (0, V3D_CLE_PCS);
+  h->bfc = V3D_CORE_READ (0, V3D_CLE_BFC);
+  h->rfc = V3D_CORE_READ (0, V3D_CLE_RFC);
+  h->err_stat = V3D_CORE_READ (0, V3D_ERR_STAT);
+  h->fdbgo = V3D_CORE_READ (0, V3D_ERR_FDBGO);
+  h->fdbgb = V3D_CORE_READ (0, V3D_ERR_FDBGB);
+  h->fdbgr = V3D_CORE_READ (0, V3D_ERR_FDBGR);
+  h->fdbgs = V3D_CORE_READ (0, V3D_ERR_FDBGS);
+  h->bpca = V3D_CORE_READ (0, V3D_PTB_BPCA);
+  h->bpcs = V3D_CORE_READ (0, V3D_PTB_BPCS);
+  h->bpoa = V3D_CORE_READ (0, V3D_PTB_BPOA);
+  h->bpos = V3D_CORE_READ (0, V3D_PTB_BPOS);
+  uint32_t ca = job->q == V3D_RENDER ? h->ct1ca : job->q == V3D_BIN ? h->ct0ca : 0;
+  h->words_at = ca ? (ca & ~3u) - 16 : 0;
+  for (int i = 0; i < 8; i++)
+    {
+      uint32_t a = h->words_at + 4 * i;
+      h->words[i] = ca && v3d_page_used (v3d, a >> V3D_MMU_PAGE_SHIFT)
+	? *(volatile uint32_t *) (v3d->area + a) : 0;
+    }
+  if (v3d->stats.first_hang.q == ~0u)
+    v3d->stats.first_hang = *h;
+}
+
 /* After a hang: Linux's v3d_reset. The platform's reset line stands for
    reset_control_reset (or the bridge's SW_INIT on the 7278). */
 void

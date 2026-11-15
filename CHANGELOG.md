@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.05: what the GPU was doing when a job hung (15 November 2026)
+
+riscos-mesa's first Mesa program on V3DRender (V3DTri, Mesa 26.1.6's v3d
+driver) had every request accepted, but each of its 102 frames, even the
+first one, which only clears, hung on the GPU and was reset, with one
+interrupt a frame. 0.04 only logged ERR_STAT.
+
+- When a job is found hung, the registers are kept before the reset
+  (`struct v3d_hang`, at the end of the statistics, so also through
+  `V3DRender_Info` r8): which queue, the job's list, CT0/CT1 CS/CA/EA/RA,
+  PCS, BFC, RFC, ERR_STAT, FDBGO/B/R/S, the binner's memory registers
+  (BPCA/BPCS/BPOA/BPOS), and 8 words of the list around the hung
+  queue's current address. The first and the last hang since loading
+  are kept, and `*V3DRender` shows them.
+- Check and HangTest load 0.05.
+
 ## Kit 4 (V3DRender 0.04, unchanged) (15 November 2026)
 
 Kit 3 on the owner's Pi 4: the TFU (lineartile, UIF, UIF with XOR) and

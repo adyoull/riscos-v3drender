@@ -26,6 +26,12 @@ page_used (struct v3d_dev *v3d, uint32_t p)
   return (v3d->page_map[p >> 5] >> (p & 31)) & 1;
 }
 
+int
+v3d_page_used (struct v3d_dev *v3d, uint32_t p)
+{
+  return p < v3d->area_pages && page_used (v3d, p);
+}
+
 static void
 mark (struct v3d_dev *v3d, uint32_t first, uint32_t n, int used)
 {

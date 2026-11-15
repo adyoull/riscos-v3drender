@@ -455,6 +455,10 @@ test_old_struct_csd_reset (void)
   now_cs += 30;
   v3d_service (dev);				/* and then it hadn't moved */
   CHECK (resets == 1 && dev->stats.timeouts == 1);
+  CHECK (dev->stats.first_hang.q == V3D_RENDER && dev->stats.first_hang.ct1ca == 0x18
+	 && dev->stats.first_hang.start == 0x10 && dev->stats.first_hang.end == 0x20
+	 && dev->stats.first_hang.words_at == 0x08 && dev->stats.first_hang.words[0] == 0);
+  CHECK (dev->stats.last_hang.q == V3D_RENDER);
   CHECK (syncobj_done (f, hout));		/* signalled, as failed */
   struct drm_v3d_get_param rc = { .param = DRM_V3D_PARAM_GLOBAL_RESET_COUNTER };
   CHECK (ioctl_ (f, DRM_IOCTL_V3D_GET_PARAM, &rc) == 0 && rc.value == 1);
@@ -476,6 +480,8 @@ test_old_struct_csd_reset (void)
   now_cs += 60;
   v3d_service (dev);
   CHECK (resets == 2 && dev->stats.timeouts == 2);
+  CHECK (dev->stats.last_hang.q == V3D_BIN && dev->stats.last_hang.start == 0x30
+	 && dev->stats.first_hang.q == V3D_RENDER);
   CHECK (!busy[V3D_RENDER] && regs[V3D_BANK_CORE0][V3D_CLE_CT1QBA / 4] != 0x40);
   CHECK (syncobj_done (f, bout));		/* the render job ended unrun */
   (void) rstarts;

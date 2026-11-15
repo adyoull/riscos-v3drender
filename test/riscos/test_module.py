@@ -312,7 +312,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 4 and out[8] != 0, "version 0.04, statistics in r8")
+    check(out[0] == 5 and out[8] != 0, "version 0.05, statistics in r8")
     stats_addr = out[8]
 
     # RISC3D: registered as a DRM device; its calls open, describe, close

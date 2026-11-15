@@ -30,7 +30,7 @@
 #include "v3d_regs.h"
 #include "plat_pi4.h"
 
-#define VERSION 4			/* 0.04 */
+#define VERSION 5			/* 0.05 */
 #define SWI_BASE 0xC3D40
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -355,6 +355,51 @@ line (const char *label, uint32_t v)
   newline ();
 }
 
+static void
+hex (const char *label, uint32_t v)
+{
+  write0 (label);
+  write0 ("&");
+  write_hex8 (v);
+}
+
+/* the registers when a job was found hung (0.05) */
+static void
+show_hang (const char *what, const struct v3d_hang *h)
+{
+  static const char *const qname[] = { "bin", "render", "TFU", "compute", "cache clean" };
+  if (h->q == ~0u)
+    return;
+  write0 (what);
+  write0 (": ");
+  write0 (h->q < 5 ? qname[h->q] : "?");
+  write0 (" job");
+  if (h->start || h->end)
+    {
+      hex (", list ", h->start);
+      hex (" to ", h->end);
+    }
+  newline ();
+  hex ("  CT0 CS ", h->ct0cs); hex (" CA ", h->ct0ca); hex (" EA ", h->ct0ea); hex (" RA ", h->ct0ra);
+  newline ();
+  hex ("  CT1 CS ", h->ct1cs); hex (" CA ", h->ct1ca); hex (" EA ", h->ct1ea); hex (" RA ", h->ct1ra);
+  newline ();
+  hex ("  PCS ", h->pcs); hex (" BFC ", h->bfc); hex (" RFC ", h->rfc); hex (" ERR_STAT ", h->err_stat);
+  newline ();
+  hex ("  FDBGO ", h->fdbgo); hex (" FDBGB ", h->fdbgb); hex (" FDBGR ", h->fdbgr); hex (" FDBGS ", h->fdbgs);
+  newline ();
+  hex ("  BPCA ", h->bpca); hex (" BPCS ", h->bpcs); hex (" BPOA ", h->bpoa); hex (" BPOS ", h->bpos);
+  newline ();
+  if (h->words_at)
+    {
+      hex ("  at ", h->words_at);
+      write0 (":");
+      for (int i = 0; i < 8; i++)
+	hex (" ", h->words[i]);
+      newline ();
+    }
+}
+
 static uint32_t
 parse_dec (const char *s)
 {
@@ -437,6 +482,9 @@ mod_command (int index, const char *tail, int argc)
       write_hex8 (s->mmu_last_sts);
       newline ();
     }
+  show_hang ("First hang", &s->first_hang);
+  if (s->timeouts > 1)
+    show_hang ("Last hang", &s->last_hang);
   for (unsigned i = pi4_log_next > PI4_LOG ? pi4_log_next - PI4_LOG : 0; i < pi4_log_next; i++)
     {
       write0 ("Log: ");
