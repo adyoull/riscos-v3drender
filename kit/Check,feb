@@ -7,4 +7,5 @@ RMEnsure V3DRender 0.11 RMLoad <Obey$Dir>.V3DRender
 RMEnsure V3DRender 0.11 Error V3DRender 0.11 didn't load
 RMEnsure RISC3D 0.03 RMLoad <Obey$Dir>.RISC3D
 Run <Obey$Dir>.V3DCheck
+WimpSlot -min 24000K -max 24000K
 Run <Obey$Dir>.V3DJob -o <Obey$Dir>.Results
