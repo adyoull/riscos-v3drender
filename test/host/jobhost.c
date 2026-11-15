@@ -18,7 +18,7 @@
 #include "csd_prog.h"
 
 static uint32_t regs[V3D_NBANKS][0x4000 / 4];
-static int busy[V3D_HW_QUEUES], hung, oom_pending;
+static int busy[V3D_HW_QUEUES], hung, csd_hung, oom_pending;
 static uint32_t time_cs = 1000, resets;
 static uint8_t *area;
 static const uint32_t area_pages = 16384;	/* 64 MB */
@@ -29,7 +29,7 @@ uint32_t v3d_rd (struct v3d_dev *v, int b, uint32_t o) { (void) v; return regs[b
 uint64_t plat_page_pa (struct v3d_dev *v, uint32_t p) { (void) v; return 0x100000000ull + p * 4096ull; }
 int plat_pages_claim (struct v3d_dev *v, uint32_t f, uint32_t n) { (void) v; memset (area + f * 4096, 0xAA, n * 4096); return 0; }
 void plat_pages_release (struct v3d_dev *v, uint32_t f, uint32_t n) { (void) v; (void) f; (void) n; }
-void plat_gpu_reset (struct v3d_dev *v) { (void) v; resets++; hung = 0; memset (busy, 0, sizeof busy); }
+void plat_gpu_reset (struct v3d_dev *v) { (void) v; resets++; hung = 0; csd_hung = 0; memset (busy, 0, sizeof busy); }
 uint32_t plat_time_cs (void) { return time_cs; }
 void plat_barrier (void) { }
 unsigned plat_irq_off (void) { return 0; }
@@ -132,13 +132,8 @@ v3d_wr (struct v3d_dev *v, int bank, uint32_t off, uint32_t val)
       uint8_t *bcl = va (regs[bank][V3D_CLE_CT0QBA / 4]);
       busy[V3D_BIN] = 1;
       hung = bcl[0] == 8;			/* wait on semaphore */
-      /* the binner's memory: 128 bytes a tile to start (Mesa's sizes) */
-      if (bcl[0] == 120)
-	{
-	  uint32_t w = (uint32_t) bits (bcl + 1, 32, 16) + 1, h = (uint32_t) bits (bcl + 1, 48, 16) + 1;
-	  uint32_t need = ((w + 63) / 64) * ((h + 63) / 64) * 128;
-	  oom_pending = regs[bank][V3D_CLE_CT0QMS / 4] < need;
-	}
+      /* a cleared frame never runs the binner out of memory, however
+	 little it's given (the Pi 4, kit 3): oom_pending stays 0 */
     }
   /* the TFU: raster R32 in, the layout asked for out (by Mesa's tiling) */
   if (bank == V3D_BANK_HUB && off == (uint32_t) V3D_TFU_ICFG (42))
@@ -163,6 +158,9 @@ v3d_wr (struct v3d_dev *v, int bank, uint32_t off, uint32_t val)
       uint32_t unif = regs[bank][(V3D_CSD_QUEUED_CFG0 (42) + 24) / 4];
       if (memcmp (va (code), csd_prog, sizeof csd_prog))
 	printf ("SIM: not csd_prog\n"), exit (2);
+      /* csd_prog's one thrsw is its end only if it starts in the final
+	 segment (CFG5 bit 1); otherwise the QPU runs on (the Pi 4, kit 3) */
+      csd_hung = !(regs[bank][(V3D_CSD_QUEUED_CFG0 (42) + 20) / 4] & 2);
       uint32_t value, addr;
       memcpy (&value, va (unif), 4);
       memcpy (&addr, va (unif + 4), 4);
@@ -195,7 +193,7 @@ plat_wait (void)
     }
   static const uint32_t bit[4] = { V3D_INT_FLDONE, V3D_INT_FRDONE, 0, 0 };
   for (int q = 0; q < V3D_HW_QUEUES; q++)
-    if (busy[q] && !(q == V3D_BIN && hung))
+    if (busy[q] && !(q == V3D_BIN && hung) && !(q == V3D_CSD && csd_hung))
       {
 	busy[q] = 0;
 	if (q == V3D_TFU)

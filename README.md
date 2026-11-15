@@ -9,8 +9,8 @@ machine's 3D driver.
 **Version 0.04, 15 November 2026.** On the owner's Pi 4, kit 1 (0.01: loading,
 power-up, buffers, reload) and kit 2 (0.02: cleared frames through the
 queues, the GPU's MMU and its interrupt, 1080p at 555 frames a second,
-the reset after a hang) passed. Kit 3 (0.04: TFU, compute, binner
-overflow, RISC3D) is next. The SWI chunk (&C3D40) and error block (&81D340) are
+the reset after a hang) passed. Kit 3 (0.04): the TFU and RISC3D passed;
+kit 4 retries the compute job with the single-segment flag. The SWI chunk (&C3D40) and error block (&81D340) are
 provisional.
 
 ## How it fits

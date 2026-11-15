@@ -1,21 +1,21 @@
-V3DRender 0.04: kit 3, the rest of the GPU's job types
-======================================================
+V3DRender 0.04: kit 4, the compute job again
+============================================
 
-Kit 2 showed that V3DRender drives the Pi 4's GPU: frames cleared through
-its queues, MMU and interrupt, and a reset after a hang. Kit 3 tries
-everything else Mesa will use, before Mesa does:
+Kit 3 on the Pi 4: the TFU (all three tiled layouts) and RISC3D passed.
+Two tests failed, and both were the test's fault, not V3DRender's:
 
-- the TFU (texture formatting unit), which Mesa uses for mipmaps and
-  copies: a raster image converted into each of the GPU's tiled layouts
-  (lineartile, UIF, UIF with XOR), every pixel checked against where
-  Mesa's own code says it belongs;
-- a compute job (what GLES 3.1 compute shaders become): a tiny program
-  for the GPU's processors, assembled with Mesa's own encoder, that
-  stores a value in memory;
-- the binner running out of memory on a 1080p frame, so that V3DRender's
-  interrupt has to give it more;
-- the GPU reached through RISC3D, as Mesa will reach it (RISC3D 0.03 is
-  in this folder: it is loaded if yours is older or not loaded).
+- The compute job never ended, so V3DRender reset the GPU after a
+  second. The test program has only one thread switch, which is its end.
+  The GPU has to be told that with a "single segment" flag (bit 1 of
+  the program's address word), as Mesa does for compute programs.
+  Without it, the GPU took that thread switch as an ordinary one and ran
+  on past the end. Kit 4 sets the flag.
+- The binner given 8 KB for a 1080p frame didn't run out: a cleared frame
+  draws nothing, so its tile lists never grow. Running the binner out of
+  memory needs drawn triangles, which need shaders, so that test waits
+  for Mesa and has been taken out (there is no test 6).
+
+The V3DRender module is the same 0.04 as in kit 3. Only V3DJob changed.
 
 Before you start
 - A Pi 4, Pi 400 or CM4 with RISC OS 5.30 or later. V3DDriver not
@@ -24,7 +24,7 @@ Before you start
 The test
 1. Double-click Check. It loads V3DRender 0.04 (replacing 0.02 or 0.03
    if loaded) and RISC3D 0.03, then runs V3DCheck and V3DJob. Tests 1-2
-   are kit 2's; 4-7 are new. Both programs write to Results, and
+   are kit 2's, 4 and 7 passed in kit 3, and 5 is the one to watch. Both programs write to Results, and
    *V3DRender's figures are added at the end.
 2. Optional: double-click HangTest again (as in kit 2).
 3. Send Results back.

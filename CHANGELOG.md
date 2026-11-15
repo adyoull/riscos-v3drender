@@ -1,5 +1,22 @@
 # Changelog
 
+## Kit 4 (V3DRender 0.04, unchanged) (15 November 2026)
+
+Kit 3 on the owner's Pi 4: the TFU (lineartile, UIF, UIF with XOR) and
+RISC3D (listed as a DRM device, a frame drawn on a file from
+RISC3D_Open) passed. Two tests failed, both because of the test:
+
+- Compute: the job never ended and was reset after about 1 s. csd_prog's
+  only thrsw is its end, so the job must be started in the final segment
+  (`V3D_CSD_CFG5_SINGLE_SEG`, bit 1 of cfg[5], as Mesa sets for programs
+  with no earlier thrsw). V3DJob sets it now. The simulated GPU in
+  `test/host/jobhost.c` now hangs a compute job without it (checked: the
+  old V3DJob fails there).
+- Binner overflow: a cleared 1080p frame given 8 KB of binner memory
+  didn't run out. A frame with no primitives never grows its tile lists,
+  so overflow needs drawn triangles (shaders). The test was removed; the
+  simulated GPU no longer runs such a frame out of memory.
+
 ## 0.04: kit 3, the rest of the GPU's job types (15 November 2026)
 
 Kit 2 passed on the owner's Pi 4 (0.02): cleared frames through the

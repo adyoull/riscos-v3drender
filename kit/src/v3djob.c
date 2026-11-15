@@ -300,7 +300,10 @@ test_csd (void)
     .cfg = { 1u << 16, 1u << 16, 1u << 16,		/* 1x1x1 workgroups */
 	     (1u << 8) | (0u << 12) | 16,		/* 1 per supergroup, 1 batch, 16 each */
 	     0,						/* batches - 1 (V3D 4.2) */
-	     code.gpu | 4,				/* the program; propagate NaNs */
+	     /* the program; propagate NaNs; single segment: its only thrsw
+		is the end, so it starts after the "last thrsw" (Mesa's
+		single_seg; without this the QPU runs past the end: kit 3) */
+	     code.gpu | 4 | 2,
 	     unif.gpu },
     .bo_handles = (uintptr_t) handles, .bo_handle_count = 3,
     .out_sync = sync,
@@ -325,32 +328,10 @@ test_csd (void)
   bo_free (&out);
 }
 
-/* the binner given 8 KB for a 1080p frame's 510 tile lists: it runs out,
-   V3DRender's interrupt gives it overflow memory, and it carries on */
-static void
-test_overflow (void)
-{
-  struct frame f;
-  if (frame_new (&f, 1920, 1080, 0))
-    {
-      check (0, "buffers for the overflow frame");
-      return;
-    }
-  f.qms = 8192;
-  fill (&f, 0x5A5A5A5A);
-  uint32_t before = stats ()[ST_OVERFLOWS], misses = stats ()[ST_OVERFLOW_MISSES];
-  unsigned t0 = now_cs ();
-  int r = frame_submit (&f, 0xFF808080);
-  int w8 = r == 0 ? wait_sync (200) : r;
-  char what[120];
-  snprintf (what, sizeof what, "a 1080p frame with 8 KB of binner memory: done in %u cs", now_cs () - t0);
-  check (r == 0 && w8 == 0 && now_cs () - t0 < 40, what);
-  printf ("    overflows given: %u\n", stats ()[ST_OVERFLOWS] - before);
-  check (stats ()[ST_OVERFLOWS] > before && stats ()[ST_OVERFLOW_MISSES] == misses,
-	 "the binner ran out and was given more");
-  check (frame_check (&f, 0xFF808080, 0x5A5A5A5A), "every pixel right");
-  frame_free (&f);
-}
+/* Test 6 (kit 3) gave the binner 8 KB for a 1080p frame: it didn't run out
+   on the Pi 4, because a cleared frame has no primitives and the tile
+   lists' first blocks aren't taken from that memory. Overflow needs drawn
+   triangles, so it waits for shaders (Mesa). */
 
 /* the GPU through RISC3D (0.02 or later), as Mesa will reach it */
 static void
@@ -473,8 +454,6 @@ main (int argc, char **argv)
       test_tfu ("UIF with XOR", 256, 256, 7, 2);
       printf ("\n5. A compute job (CSD: GLES 3.1 compute shaders)\n");
       test_csd ();
-      printf ("\n6. The binner running out of memory\n");
-      test_overflow ();
       printf ("\n7. Through RISC3D\n");
       test_risc3d ();
       uint32_t const *st = stats ();
