@@ -1,14 +1,21 @@
-V3DRender 0.06: kit 5, compute on every QPU
+V3DRender 0.06: kit 6, replaying Mesa's job
 ============================================
 
-Mesa's programs (riscos-mesa's V3DTri) draw a few tiles on the Pi 4 and
-then stop, with pixels waiting for the GPU's processors (QPUs) to run
-their fragment shaders. Mesa's lists and shaders look right. Kit 4's
-compute job ran on one QPU only. Kit 5 adds test 8: compute jobs of 64,
-then 4096 workgroups, each of which writes its own number, so that
-threads run on every QPU. If some QPUs never finish a thread, test 8
-stops the same way Mesa's frames do, and the numbers that didn't arrive
-show which work went missing.
+Kit 5 showed that all the GPU's processors run work (4096 workgroups,
+every one right). So the hang in Mesa's frames is something in the job
+itself, or in how the GPU handles it. MesaJob is the *V3DDump you sent:
+Mesa's first job, as the GPU had it. Replay runs it again from V3DJob,
+without Mesa: once as Mesa sent it, then once each with one change:
+
+  - without the Z store;
+  - without the colour store;
+  - without either store;
+  - without its primitives;
+  - with the fragment shader not 4-way threadable;
+  - with the scoreboard turned off.
+
+Whichever changes let the GPU finish point at the cause. Each run that
+hangs takes about 1.3 s and V3DRender resets the GPU; that's expected.
 
 The V3DRender module is 0.06, as you have loaded.
 
@@ -17,13 +24,9 @@ Before you start
   loaded. Copy this folder to a hard disc.
 
 The test
-1. Double-click Check. It loads V3DRender 0.04 (replacing 0.02 or 0.03
-   if loaded) and RISC3D 0.03, then runs V3DCheck and V3DJob. Tests 1-7
-   passed before; 8 is new. Both programs write to Results, and
-   *V3DRender's figures are added at the end.
-2. Optional: double-click HangTest again (as in kit 2).
+1. Double-click Replay. It loads V3DRender 0.06 from this folder if it
+   isn't loaded. No program should be using the GPU at the same time:
+   Replay needs the buffer addresses Mesa's job had.
+2. Optional: double-click Check too (kits 1-5's tests, all passed in
+   kit 5).
 3. Send Results back.
-
-The compute job is the first program to run on the GPU's own processors
-under V3DRender. If one of the new tests freezes the machine, restart
-and say which number it had reached.

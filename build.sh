@@ -67,6 +67,7 @@ gcc -std=gnu11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined $INC -I
 out/jobhost | grep -E "passed|failed"
 out/jobhost hang | grep -E "passed|failed"
 python3 -B tools/v3ddump.py out/obj/hang.dump > out/obj/hang.txt
+out/jobhost replay out/obj/hang.dump | grep -q "7 failed" && echo "replay: ok" || { echo "replay: FAIL"; exit 1; }
 grep -q "Hung: bin job" out/obj/hang.txt && grep -q "Wait on Semaphore" out/obj/hang.txt && grep -q "Set Base: address=0x213000" out/obj/hang.txt \
   && grep -q "Clear Colors\|Tile Rendering Mode Cfg" out/obj/hang.txt && echo "v3ddump: ok" || { echo "v3ddump: FAIL"; exit 1; }
 AC="-std=gnu11 -O2 -mfpu=vfpv3 -mfloat-abi=hard -Wall -Wextra -Werror"
@@ -78,6 +79,7 @@ ${T}strip out/obj/v3djob.elf
 # the Pi test kit
 cp "out/V3DRender,ffa" out/obj/
 python3 tools/mkkit.py out/V3DRenderTest.zip V3DRenderTest kit/ReadMe,fff kit/Check,feb \
-  kit/HangTest,feb kit/V3DCheck,fd1 "out/obj/V3DJob,ff8" "out/obj/V3DRender,ffa" "kit/RISC3D,ffa"
+  kit/HangTest,feb kit/Replay,feb kit/V3DCheck,fd1 "out/obj/V3DJob,ff8" "out/obj/V3DRender,ffa" \
+  "kit/RISC3D,ffa" "kit/MesaJob,ffd"
 ls -la "out/V3DRender,ffa" out/V3DRenderTest.zip
 # (delivered kits are numbered: V3DRenderTest-2.zip was 0.02's)

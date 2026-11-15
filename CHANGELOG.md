@@ -1,5 +1,21 @@
 # Changelog
 
+## Kit 6 (V3DRender 0.06, unchanged) (15 November 2026)
+
+Kit 5 passed on the Pi: 64 and 4096 workgroups, every one wrote its number. So all QPUs run threads, and the idea that some QPUs never finish is ruled out.
+
+The owner's *V3DDump of V3DTri's first hang, decoded with tools/v3ddump.py, matches what riscos-mesa's OutDebug showed:
+- the BCL, the RCL, the generic tile list, the shader and attribute records, and the binner's tile lists (16 tiles, 128-byte first blocks, PTB chunks to &38B000);
+- the render stops in tile (1,0), after row 0.
+
+Kit 6 replays that job without Mesa (`V3DJob replay <dump>`, the Obey file Replay, the dump as MesaJob):
+- BOs are made in address order, with fillers for the gaps, so they get the same GPU addresses (first fit).
+- Every BO is copied back before each run.
+- The job runs as sent, then once each without the Z store, without the colour store, without either, without its primitives, with the FS not 4-way threadable, and with the scoreboard off.
+- Each run reports whether it finished, or the render CA and RA at the reset.
+
+The simulated GPU runs replay's mechanics on its own hang dump.
+
 ## Kit 5 (V3DRender 0.06, unchanged) (15 November 2026)
 
 riscos-mesa's test 4 on the Pi: Mesa's first job decodes as it should.

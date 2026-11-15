@@ -22,6 +22,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 #include "clbuild.h"
 #include "drm/drm.h"
 #include "drm/v3d_drm.h"
@@ -437,13 +438,238 @@ test_risc3d (void)
   sync = mysync;
 }
 
+/* ---- kit 6: replaying a job from a *V3DDump file ----
+   The dump (V3DRender 0.06) holds the job's lists, its BOs as the GPU
+   left them, and their GPU addresses. With nothing else allocated, BOs
+   made in address order (with fillers for the gaps) land at the same
+   addresses (V3DRender allocates first fit), so the lists run as they
+   are. Each run copies the BOs back, makes one change to the generic
+   tile list, submits, and says whether the GPU finished. */
+
+struct rbo { uint32_t gpu, size; const uint8_t *data; struct bo bo; };
+
+static uint8_t *rd_buf;
+static uint32_t rd_w[12];
+static struct rbo rbos[64];
+static unsigned nrbos;
+
+static int
+replay_load (const char *path)
+{
+  FILE *f = fopen (path, "rb");
+  if (!f)
+    {
+      printf ("  can't open %s\n", path);
+      return -1;
+    }
+  fseek (f, 0, SEEK_END);
+  long n = ftell (f);
+  fseek (f, 0, SEEK_SET);
+  rd_buf = malloc ((size_t) n);
+  if (!rd_buf || fread (rd_buf, 1, (size_t) n, f) != (size_t) n)
+    {
+      fclose (f);
+      printf ("  can't read %s\n", path);
+      return -1;
+    }
+  fclose (f);
+  memcpy (rd_w, rd_buf, sizeof rd_w);
+  if (rd_w[0] != 0x44443356 || rd_w[1] != 0x31504d55)
+    {
+      printf ("  %s isn't a V3DRender dump\n", path);
+      return -1;
+    }
+  uint32_t off = (rd_w[2] + 32) * 4;		/* the header, then struct v3d_hang */
+  nrbos = rd_w[11] < 64 ? rd_w[11] : 64;
+  for (unsigned i = 0; i < nrbos; i++)
+    {
+      memcpy (&rbos[i].gpu, rd_buf + off, 4);
+      memcpy (&rbos[i].size, rd_buf + off + 4, 4);
+      rbos[i].data = rd_buf + off + 8;
+      off += 8 + rbos[i].size;
+    }
+  /* in address order */
+  for (unsigned i = 0; i < nrbos; i++)
+    for (unsigned j = i + 1; j < nrbos; j++)
+      if (rbos[j].gpu < rbos[i].gpu)
+	{
+	  struct rbo t = rbos[i];
+	  rbos[i] = rbos[j];
+	  rbos[j] = t;
+	}
+  printf ("  render list &%08X-&%08X, bin list &%08X-&%08X, %u BOs\n",
+	  rd_w[4], rd_w[5], rd_w[6], rd_w[7], nrbos);
+  static struct bo fill[64];
+  unsigned nfill = 0;
+  for (unsigned i = 0; i < nrbos; i++)
+    {
+      if (!rbos[i].size)
+	{
+	  printf ("  BO &%08X wasn't kept in the dump\n", rbos[i].gpu);
+	  return -1;
+	}
+      for (;;)
+	{
+	  if (bo_new (&rbos[i].bo, rbos[i].size))
+	    return -1;
+	  if (rbos[i].bo.gpu == rbos[i].gpu)
+	    break;
+	  uint32_t got = rbos[i].bo.gpu;
+	  bo_free (&rbos[i].bo);
+	  if (got > rbos[i].gpu || nfill == 64)
+	    {
+	      printf ("  can't place BO &%08X (got &%08X): run Replay just after loading V3DRender\n",
+		      rbos[i].gpu, got);
+	      return -1;
+	    }
+	  if (bo_new (&fill[nfill++], rbos[i].gpu - got))	/* a filler for the gap */
+	    return -1;
+	}
+    }
+  return 0;
+}
+
+static uint8_t *
+replay_cpu (uint32_t gpu)
+{
+  for (unsigned i = 0; i < nrbos; i++)
+    if (gpu >= rbos[i].gpu && gpu < rbos[i].gpu + rbos[i].size)
+      return rbos[i].bo.cpu + (gpu - rbos[i].gpu);
+  return 0;
+}
+
+/* the generic tile list's packets: the lengths of those Mesa puts there */
+static int
+gtl_len (uint8_t op)
+{
+  switch (op)
+    {
+    case 0x7D: case 0x1A: case 0x1B: case 0x12: case 0x01: return 1;	/* coords implicit, end of loads, end of tile, return, nop */
+    case 0x38: case 0x15: case 0x19: return 2;	/* prim list format, branch implicit, clear */
+    case 0x36: return 5;			/* instance ID */
+    case 0x1D: case 0x1C: return 13;		/* store / load general */
+    default: return 0;
+    }
+}
+
+enum { NO_CHANGE, NO_Z_STORE, NO_COLOUR_STORE, NO_STORES, NO_PRIMITIVES,
+       FS_NOT_4WAY, NO_SCOREBOARD, LAST_CHANGE = NO_SCOREBOARD };
+static const char *const change_name[] = {
+  "as Mesa sent it", "without the Z store", "without the colour store",
+  "without either store", "without its primitives (no Branch to Implicit Tile List)",
+  "with the fragment shader not 4-way threadable", "with the scoreboard turned off" };
+
+/* the GL Shader State record the bin list names (opcode 64) */
+static uint8_t *
+replay_record (void)
+{
+  uint8_t *bcl = replay_cpu (rd_w[6]);
+  for (uint32_t k = 0; bcl && k + 5 <= rd_w[7] - rd_w[6]; k++)
+    if (bcl[k] == 64)
+      {
+	uint32_t w;
+	memcpy (&w, bcl + k + 1, 4);
+	uint8_t *rec = replay_cpu (w & ~31u);
+	if (rec && (w & 31) <= 16)
+	  return rec;
+      }
+  return 0;
+}
+
+static void
+replay_run (int change)
+{
+  for (unsigned i = 0; i < nrbos; i++)
+    memcpy (rbos[i].bo.cpu, rbos[i].data, rbos[i].size);
+  /* the generic tile list: Start Address of Generic Tile List (opcode 20) in the RCL */
+  uint8_t *rcl = replay_cpu (rd_w[4]);
+  uint32_t gs = 0, ge = 0;
+  /* found by opcode 20 followed by two addresses in a BO of the job */
+  for (uint32_t k = 0; rcl && k + 9 <= rd_w[5] - rd_w[4]; k++)
+    if (rcl[k] == 20)
+      {
+	uint32_t a, b;
+	memcpy (&a, rcl + k + 1, 4);
+	memcpy (&b, rcl + k + 5, 4);
+	if (replay_cpu (a) && b > a && b - a < 256)
+	  {
+	    gs = a;
+	    ge = b;
+	    break;
+	  }
+      }
+  uint8_t *g = gs ? replay_cpu (gs) : 0;
+  int stores = 0, changed = change == NO_CHANGE;
+  for (uint32_t k = 0; g && k < ge - gs + 1;)
+    {
+      int n = gtl_len (g[k]);
+      if (!n)
+	break;
+      int kill = 0;
+      if (g[k] == 0x1D)
+	{
+	  int z = stores++ > 0;			/* Mesa stores colour first, then Z */
+	  kill = change == NO_STORES || (change == NO_Z_STORE && z) || (change == NO_COLOUR_STORE && !z);
+	}
+      if (g[k] == 0x15 && change == NO_PRIMITIVES)
+	kill = 1;
+      if (kill)
+	{
+	  memset (g + k, 0x01, (size_t) n);	/* NOPs */
+	  changed = 1;
+	}
+      if (g[k] == 0x12)
+	break;
+      k += (uint32_t) n;
+    }
+  uint8_t *rec = replay_record ();
+  if (rec && change == FS_NOT_4WAY)
+    {
+      rec[12] &= (uint8_t) ~1u;		/* bit 96: Fragment Shader 4-way threadable */
+      changed = 1;
+    }
+  if (rec && change == NO_SCOREBOARD)
+    {
+      rec[2] |= 1;			/* bit 16: Turn off scoreboard */
+      changed = 1;
+    }
+  printf ("\n  The job %s%s\n", change_name[change], changed ? "" : " (not found: run as sent)");
+  struct drm_v3d_submit_cl c = {
+    .bcl_start = rd_w[6], .bcl_end = rd_w[7], .rcl_start = rd_w[4], .rcl_end = rd_w[5],
+    .qma = rd_w[8], .qms = rd_w[9], .qts = rd_w[10], .out_sync = sync,
+  };
+  uint32_t handles[64];
+  for (unsigned i = 0; i < nrbos; i++)
+    handles[i] = rbos[i].bo.handle;
+  c.bo_handles = (uintptr_t) handles;
+  c.bo_handle_count = nrbos;
+  uint32_t resets = stats ()[13];
+  unsigned t0 = now_cs ();
+  int r = ioctl_ (DRM_IOCTL_V3D_SUBMIT_CL, &c);
+  int w8 = r == 0 ? wait_sync (300) : r;
+  const uint32_t *st = stats ();
+  int hung = st[13] != resets;
+  char what[160];
+  if (r)
+    snprintf (what, sizeof what, "SUBMIT_CL refused: %d", r);
+  else if (hung)
+    snprintf (what, sizeof what, "the GPU finished it: no, reset after %u cs (render CA &%08X, RA &%08X)",
+	      now_cs () - t0, st[48 + 8], st[48 + 10]);
+  else
+    snprintf (what, sizeof what, "the GPU finished it in %u cs", now_cs () - t0);
+  check (r == 0 && w8 == 0 && !hung, what);
+}
+
 int
 main (int argc, char **argv)
 {
   int hang = 0;
+  const char *replay = 0;
   for (int i = 1; i < argc; i++)
     if (!strcmp (argv[i], "hang"))
       hang = 1;
+    else if (!strcmp (argv[i], "replay") && i + 1 < argc)
+      replay = argv[++i];
     else if (!strcmp (argv[i], "-o") && i + 1 < argc)
       results = fopen (results_path = argv[++i], "a");	/* add to the file */
   unsigned ver, v3d, hz;
@@ -465,6 +691,24 @@ main (int argc, char **argv)
   struct drm_syncobj_create sc = { 0, 0 };
   ioctl_ (DRM_IOCTL_SYNCOBJ_CREATE, &sc);
   sync = sc.handle;
+
+  if (replay)
+    {
+      printf ("\n9. Replaying the job in %s\n", replay);
+      if (replay_load (replay) == 0)
+	for (int change = NO_CHANGE; change <= LAST_CHANGE; change++)
+	  replay_run (change);
+      else
+	check (0, "the job loaded");
+      struct drm_syncobj_destroy sd = { sync, 0 };
+      ioctl_ (DRM_IOCTL_SYNCOBJ_DESTROY, &sd);
+      sys_close (file);
+      printf (fails ? "\n%d failed.\n" : "\nAll passed.\n", fails);
+      if (results)
+	fclose (results);
+      status ();
+      return fails != 0;
+    }
 
   struct frame f;
   if (!hang)
