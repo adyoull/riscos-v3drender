@@ -28,7 +28,7 @@ module_start:
 	.word	flags - module_start
 
 title:	.asciz	"V3DRender"
-help:	.asciz	"V3DRender\t0.10 (15 Nov 2026) Pi 4 GPU driver (V3D 4.2), after Linux's v3d"
+help:	.asciz	"V3DRender\t0.11 (15 Nov 2026) Pi 4 GPU driver (V3D 4.2), after Linux's v3d"
 swi_names:
 	.asciz	"V3DRender\0Info\0Open\0Close\0Ioctl\0Reset\0Debug\0"
 	.align	2
@@ -107,6 +107,43 @@ call_hal:
 	mov	r9, r2
 	blx	r1
 	ldmfd	sp!, {r4, r9, r12, pc}
+
+@ (0.11) The CPU's data caches by address, to the point of coherency
+@ (the L2 too, on the Cortex-A72): DCCMVAC cleans, DCIMVAC invalidates.
+@ r0 = start, r1 = end; the line size from CTR.DminLine.
+	.global	cache_clean_range
+cache_clean_range:
+	mrc	p15, 0, r2, c0, c0, 1		@ CTR
+	ubfx	r2, r2, #16, #4
+	mov	r3, #4
+	lsl	r3, r3, r2			@ bytes a line
+	sub	r2, r3, #1
+	bic	r0, r0, r2
+	dsb	sy
+1:	cmp	r0, r1
+	bhs	2f
+	mcr	p15, 0, r0, c7, c10, 1		@ DCCMVAC
+	add	r0, r0, r3
+	b	1b
+2:	dsb	sy
+	mov	pc, lr
+
+	.global	cache_inval_range
+cache_inval_range:
+	mrc	p15, 0, r2, c0, c0, 1
+	ubfx	r2, r2, #16, #4
+	mov	r3, #4
+	lsl	r3, r3, r2
+	sub	r2, r3, #1
+	bic	r0, r0, r2
+	dsb	sy
+1:	cmp	r0, r1
+	bhs	2f
+	mcr	p15, 0, r0, c7, c6, 1		@ DCIMVAC
+	add	r0, r0, r3
+	b	1b
+2:	dsb	sy
+	mov	pc, lr
 
 @ The buffer areas' handler: a PMP is never grown or shrunk by
 @ OS_ChangeDynamicArea (r0 = 0 PreGrow, 2 PreShrink are refused)

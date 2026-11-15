@@ -55,6 +55,7 @@
 #define PAGE_AP_PRIVILEGED	2u
 #define PAGE_NOT_CACHEABLE	(1u << 5)	/* bufferable: Normal, non-cacheable */
 #define PAGE_LOCK		(1u << 15)
+#define PAGE_CACHED_REQ		(1u << 31)	/* ours: map cacheable (0.11) */
 #define DA_CLAIM_ANY		0xFFFFFFFEu	/* -2: the kernel picks */
 #define DA_RELEASE		0xFFFFFFFFu	/* -1 */
 
@@ -442,7 +443,9 @@ pmp_claim_map (struct pmp *a, uint32_t first, uint32_t n, uint32_t phys_page, ui
       if (!e)
 	{
 	  for (uint32_t i = 0; i < k; i++)
-	    list[i * 3 + 1] = list[i * 3], list[i * 3 + 2] = ap | PAGE_NOT_CACHEABLE | PAGE_LOCK;
+	    list[i * 3 + 1] = list[i * 3],
+	      list[i * 3 + 2] = (ap & ~PAGE_CACHED_REQ)
+		| ((ap & PAGE_CACHED_REQ) ? 0 : PAGE_NOT_CACHEABLE) | PAGE_LOCK;
 	  e = pmp_op (a, 22, list, k);
 	}
       if (e)
@@ -465,10 +468,36 @@ pmp_pa (struct pmp *a, uint32_t page)
 }
 
 int
-plat_pages_claim (struct v3d_dev *v3d, uint32_t first, uint32_t n)
+plat_pages_claim (struct v3d_dev *v3d, uint32_t first, uint32_t n, int cached)
 {
   (void) v3d;
-  return pmp_claim_map (&pi4.bo, first, n, DA_RELEASE, PAGE_AP_USER_RW) ? -1 : 0;
+  return pmp_claim_map (&pi4.bo, first, n, DA_RELEASE,
+			PAGE_AP_USER_RW | (cached ? PAGE_CACHED_REQ : 0)) ? -1 : 0;
+}
+
+/* (0.11) OS_Memory 65: a logical address's physical address (64-bit) */
+uint64_t
+plat_virt_pa (uintptr_t va)
+{
+  regs r = {{ 65, (unsigned) va }};
+  if (swix_regs (OS_Memory, &r))
+    return 0;
+  return r.r[0] | ((uint64_t) r.r[1] << 32);
+}
+
+void cache_clean_range (const void *start, const void *end);
+void cache_inval_range (const void *start, const void *end);
+
+void
+plat_cache_clean (const void *p, uint32_t bytes)
+{
+  cache_clean_range (p, (const char *) p + bytes);
+}
+
+void
+plat_cache_inval (const void *p, uint32_t bytes)
+{
+  cache_inval_range (p, (const char *) p + bytes);
 }
 
 void

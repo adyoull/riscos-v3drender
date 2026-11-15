@@ -74,10 +74,12 @@ check (int cond, const char *what)
 
 struct bo { uint32_t handle, gpu; uint8_t *cpu; uint32_t size; };
 
+static uint32_t bo_flags;		/* for the next bo_new (0.11) */
+
 static int
 bo_new (struct bo *b, uint32_t size)
 {
-  struct drm_v3d_create_bo c = { .size = size };
+  struct drm_v3d_create_bo c = { .size = size, .flags = bo_flags };
   int r = ioctl_ (DRM_IOCTL_V3D_CREATE_BO, &c);
   if (r)
     {
@@ -92,6 +94,28 @@ bo_new (struct bo *b, uint32_t size)
   b->size = size;
   return r;
 }
+
+/* (0.11) the program's own memory as a BO */
+static int
+bo_import (struct bo *b, uint8_t *mem, uint32_t size)
+{
+  struct drm_riscos_import_memory im = { .address = (uintptr_t) mem, .size = size };
+  int r = ioctl_ (DRM_IOCTL_RISCOS_IMPORT_MEMORY, &im);
+  if (r)
+    {
+      printf ("  IMPORT_MEMORY %u bytes at &%08X: %d\n", size, (unsigned) im.address, r);
+      return r;
+    }
+  struct drm_v3d_mmap_bo m = { .handle = im.handle };
+  r = ioctl_ (DRM_IOCTL_V3D_MMAP_BO, &m);
+  b->handle = im.handle;
+  b->gpu = im.offset;
+  b->cpu = (uint8_t *) (uintptr_t) m.offset;
+  b->size = size;
+  return r;
+}
+
+static uint8_t *import_mem;		/* frame_new's target, if set (0.11) */
 
 static void
 bo_free (struct bo *b)
@@ -131,7 +155,9 @@ frame_new (struct frame *f, uint32_t w, uint32_t h, int hang)
   uint32_t asize, ssize;
   clear_job_sizes (w, h, &asize, &ssize);
   /* the image has 4 KB of guard either side */
-  if (bo_new (&f->target, w * h * 4 + 8192) || bo_new (&f->alloc, asize)
+  uint32_t tsize = (w * h * 4 + 8192 + 4095) & ~4095u;
+  if ((import_mem ? bo_import (&f->target, import_mem, tsize) : bo_new (&f->target, tsize))
+      || (bo_flags = 0, 0) || bo_new (&f->alloc, asize)
       || bo_new (&f->state, ssize) || bo_new (&f->lists, 3 * 65536))
     return -1;
   struct clear_job *j = &f->j;
@@ -380,6 +406,70 @@ test_csd_wide (unsigned groups)
   bo_free (&code);
   bo_free (&unif);
   bo_free (&out);
+}
+
+/* Test 11 (0.11): a frame drawn into a BO the CPU maps cacheable, and
+   into the program's own memory (imported). The CPU reads each frame
+   back, as riscos-mesa does, timed. Before each job the CPU has read the
+   whole target (its lines are in the cache), so a missing invalidate
+   would show the old contents. */
+static uint32_t
+read_all (struct frame *f, unsigned *cs)
+{
+  unsigned t0 = now_cs ();
+  uint32_t sum = 0;
+  const volatile uint32_t *p = (const uint32_t *) (f->target.cpu + 4096);
+  for (int rep = 0; rep < 10; rep++)
+    for (uint32_t i = 0; i < f->j.width * f->j.height; i++)
+      sum += p[i];
+  *cs = now_cs () - t0;
+  return sum;
+}
+
+static void
+test_cached_frame (const char *what, uint32_t w, uint32_t h, int mode)
+{
+  struct frame f;
+  uint8_t *mem = 0;
+  if (mode == 2)
+    {
+      uint32_t tsize = (w * h * 4 + 8192 + 4095) & ~4095u;
+      mem = malloc (tsize + 4096);
+      if (!mem)
+	{
+	  check (0, "memory to import");
+	  return;
+	}
+      import_mem = (uint8_t *) (((uintptr_t) mem + 4095) & ~(uintptr_t) 4095);
+    }
+  bo_flags = mode == 1 ? DRM_RISCOS_BO_CPU_CACHED : 0;
+  int r = frame_new (&f, w, h, 0);
+  import_mem = 0;
+  bo_flags = 0;
+  if (r)
+    {
+      check (0, what);
+      free (mem);
+      return;
+    }
+  fill (&f, 0xDEADBEEF);
+  unsigned cs;
+  read_all (&f, &cs);			/* the old contents into the cache */
+  r = frame_submit (&f, 0xFF336699);
+  check (r == 0 && wait_sync (200) == 0, what);
+  check (frame_check (&f, 0xFF336699, 0xDEADBEEF), "every pixel the GPU's, the guards the CPU's");
+  read_all (&f, &cs);
+  uint32_t mb = w * h * 4 * 10 / 1048576;
+  if (cs)
+    printf ("    the CPU read the frame 10 times in %u cs: %u MB/s\n", cs, mb * 100 / cs);
+  else
+    printf ("    the CPU read the frame 10 times in under 1 cs\n");
+  /* a second frame on the same BO: clean before, invalidate after again */
+  r = frame_submit (&f, 0xFF0000FF);
+  check (r == 0 && wait_sync (200) == 0 && frame_check (&f, 0xFF0000FF, 0xDEADBEEF),
+	 "and a second frame on the same memory");
+  frame_free (&f);
+  free (mem);
 }
 
 /* Test 6 (kit 3) gave the binner 8 KB for a 1080p frame: it didn't run out
@@ -931,6 +1021,10 @@ main (int argc, char **argv)
       printf ("\n8. Compute on every QPU: 64, then 4096 workgroups\n");
       test_csd_wide (64);
       test_csd_wide (4096);
+      printf ("\n11. Frames the CPU reads back: uncached, cached, and in its own memory (0.11)\n");
+      test_cached_frame ("1920x1080, uncached (as before)", 1920, 1080, 0);
+      test_cached_frame ("1920x1080, DRM_RISCOS_BO_CPU_CACHED", 1920, 1080, 1);
+      test_cached_frame ("1920x1080, the program's own memory (IMPORT_MEMORY)", 1920, 1080, 2);
       printf ("\n7. Through RISC3D\n");
       test_risc3d ();
       uint32_t const *st = stats ();

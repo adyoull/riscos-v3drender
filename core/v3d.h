@@ -102,6 +102,12 @@ struct v3d_bo
   uint32_t refs;			/* handles + jobs */
   uint32_t last[V3D_NQ];		/* the last job on each queue to use it */
   uint8_t used, overflow;
+  /* (0.11) cached for the CPU, or memory imported from the program;
+     both need cache maintenance around jobs */
+  uint8_t cached, imported, stale;	/* stale: invalidate before the file sees it */
+  int16_t file;				/* the file that made it (-1: V3DRender's) */
+  uintptr_t cpu;			/* imported: the program's address */
+  uint64_t *pa;				/* imported: each page's physical address */
 };
 
 struct v3d_syncobj { uint8_t used, has_fence; struct v3d_fence f; };
@@ -111,6 +117,7 @@ struct v3d_file
   int used;
   uint32_t owner;			/* the platform's: a Wimp task, say */
   uint32_t resets;			/* resets its jobs caused */
+  uint32_t nstale;			/* its BOs waiting for a cache invalidate (0.11) */
   uint16_t *handles;			/* handle (from 1) -> BO */
   struct v3d_syncobj *syncobjs;		/* handle (from 1) */
 };
@@ -244,6 +251,12 @@ int64_t v3d_now_ns (void);
 
 /* v3d_bo.c: buffers */
 int v3d_bo_create (struct v3d_dev *v3d, uint32_t bytes, int *bo_out);
+int v3d_bo_create_cached (struct v3d_dev *v3d, uint32_t bytes, int cached, int *bo_out);
+int v3d_bo_import (struct v3d_dev *v3d, uintptr_t cpu, uint32_t bytes, int *bo_out);
+uint64_t v3d_bo_page_pa (struct v3d_dev *v3d, int bo, uint32_t i);
+int v3d_bo_at (struct v3d_dev *v3d, uint32_t gpu);	/* the BO holding a GPU address, or 0 */
+void v3d_bo_cpu_clean (struct v3d_dev *v3d, int bo);	/* before a job (0.11) */
+void v3d_file_caches (struct v3d_dev *v3d, int f);	/* invalidates its stale BOs */
 int v3d_page_used (struct v3d_dev *v3d, uint32_t page);
 void v3d_bo_get (struct v3d_dev *v3d, int bo);
 void v3d_bo_put (struct v3d_dev *v3d, int bo);	/* not with interrupts off */
@@ -252,7 +265,10 @@ void v3d_bo_fini (struct v3d_dev *v3d);
 static inline uint32_t v3d_bo_offset (struct v3d_dev *v3d, int bo)
 { return v3d->bos[bo].first << V3D_MMU_PAGE_SHIFT; }
 static inline void *v3d_bo_cpu (struct v3d_dev *v3d, int bo)
-{ return v3d->area + (v3d->bos[bo].first << V3D_MMU_PAGE_SHIFT); }
+{
+  return v3d->bos[bo].imported ? (void *) v3d->bos[bo].cpu
+    : v3d->area + (v3d->bos[bo].first << V3D_MMU_PAGE_SHIFT);
+}
 
 /* v3d_ioctl.c: the request interface */
 int v3d_init (struct v3d_dev *v3d);	/* after the platform's power-on */

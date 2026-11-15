@@ -80,9 +80,15 @@ plat_page_pa (struct v3d_dev *v3d, uint32_t page)
   return 0x200000000ull + (uint64_t) ((1000 - g) * 16 + i) * 4096;
 }
 
+static unsigned cache_cleans, cache_invals, last_cached;
+uint64_t plat_virt_pa (uintptr_t va) { return va ? 0x400000000ull + (va & ~4095ull) : 0; }
+void plat_cache_clean (const void *p, uint32_t n) { (void) p; (void) n; cache_cleans++; }
+void plat_cache_inval (const void *p, uint32_t n) { (void) p; (void) n; cache_invals++; }
+
 int
-plat_pages_claim (struct v3d_dev *v3d, uint32_t first, uint32_t n)
+plat_pages_claim (struct v3d_dev *v3d, uint32_t first, uint32_t n, int cached)
 {
+  last_cached = (unsigned) cached;
   (void) v3d;
   for (uint32_t p = first; p < first + n; p++)
     {
@@ -539,6 +545,65 @@ test_old_struct_csd_reset (void)
   CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &s) == 0);
   sim_finish (V3D_RENDER);
   CHECK (syncobj_done (f, c4));
+
+  /* (0.11) a cached BO: mapped cacheable, cleaned at submit, invalidated
+     at the file's next request after the job */
+  struct drm_v3d_create_bo cc = { .size = 8192, .flags = DRM_RISCOS_BO_CPU_CACHED };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_CREATE_BO, &cc) == 0 && last_cached == 1);
+  int ccbo = dev->files[f].handles[cc.handle];
+  CHECK (dev->bos[ccbo].cached && dev->bos[ccbo].file == f);
+  struct drm_v3d_create_bo bad = { .size = 4096, .flags = 1 };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_CREATE_BO, &bad) == -V3D_EINVAL);
+  unsigned cl0 = cache_cleans, in0 = cache_invals;
+  uint32_t c5 = syncobj (f, 0);
+  struct drm_v3d_submit_cl k5 = { .rcl_start = 0x10, .rcl_end = 0x20, .out_sync = c5,
+				  .bo_handles = (uintptr_t) &cc.handle, .bo_handle_count = 1 };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &k5) == 0);
+  CHECK (cache_cleans == cl0 + 1 && cache_invals == in0);
+  sim_finish (V3D_RENDER);
+  CHECK (syncobj_done (f, c5));			/* a request: the wait */
+  CHECK (cache_invals == in0 + 1 && !dev->bos[ccbo].stale && dev->files[f].nstale == 0);
+  struct drm_v3d_get_param gp = { .param = DRM_V3D_PARAM_SUPPORTS_TFU };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_GET_PARAM, &gp) == 0 && cache_invals == in0 + 1);	/* once */
+  /* an ordinary BO: no cache work */
+  uint32_t ob = bo_new (f, 4096, 0);
+  cl0 = cache_cleans;
+  k5.bo_handles = (uintptr_t) &ob;
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &k5) == 0 && cache_cleans == cl0);
+  sim_finish (V3D_RENDER);
+
+  /* (0.11) importing the program's memory */
+  static uint8_t mem[5 * 4096] __attribute__ ((aligned (4096)));
+  struct drm_riscos_import_memory im = { .address = (uintptr_t) mem, .size = 3 * 4096 };
+  uint32_t used0 = dev->pages_used;
+  CHECK (ioctl_ (f, DRM_IOCTL_RISCOS_IMPORT_MEMORY, &im) == 0 && im.handle && im.offset);
+  int ibo = dev->files[f].handles[im.handle];
+  CHECK (dev->bos[ibo].imported && dev->bos[ibo].npages == 3 && dev->pages_used == used0);
+  for (uint32_t i = 0; i < 3; i++)
+    CHECK ((pt[(im.offset >> 12) + i] & 0xFFFFFF)
+	   == (uint32_t) ((0x400000000ull + (uintptr_t) mem + i * 4096) >> 12 & 0xFFFFFF)
+	   && (pt[(im.offset >> 12) + i] & (1u << 28)));
+  struct drm_v3d_mmap_bo mm = { .handle = im.handle };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_MMAP_BO, &mm) == 0 && mm.offset == (uintptr_t) mem);
+  struct drm_riscos_import_memory im2 = { .address = (uintptr_t) mem + 4, .size = 4096 };
+  CHECK (ioctl_ (f, DRM_IOCTL_RISCOS_IMPORT_MEMORY, &im2) == -V3D_EINVAL);	/* unaligned */
+  im2.address = (uintptr_t) mem;
+  im2.size = 100;
+  CHECK (ioctl_ (f, DRM_IOCTL_RISCOS_IMPORT_MEMORY, &im2) == -V3D_EINVAL);
+  im2.size = 0;
+  CHECK (ioctl_ (f, DRM_IOCTL_RISCOS_IMPORT_MEMORY, &im2) == -V3D_EINVAL);
+  /* used by a job, then closed: kept until the job is done, then out of the MMU */
+  cl0 = cache_cleans;
+  in0 = cache_invals;
+  k5.bo_handles = (uintptr_t) &im.handle;
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &k5) == 0 && cache_cleans == cl0 + 1);
+  struct drm_gem_close gci = { .handle = im.handle };
+  CHECK (ioctl_ (f, DRM_IOCTL_GEM_CLOSE, &gci) == 0);
+  CHECK (dev->bos[ibo].used && (pt[im.offset >> 12] & (1u << 28)));
+  sim_finish (V3D_RENDER);
+  v3d_service (dev);
+  CHECK (!dev->bos[ibo].used && !(pt[im.offset >> 12] & (1u << 28)));
+  CHECK (dev->pages_used == used0);
 
   /* a client that goes away with its jobs still running */
   int g = v3d_open (dev, 2);

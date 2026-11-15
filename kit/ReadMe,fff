@@ -1,22 +1,22 @@
-V3DRender 0.10: kit 12, recovering after a failed run
-=====================================================
+V3DRender 0.11: kit 13, frames read back faster
+================================================
 
-0.10 adds a way out when something has gone wrong:
+riscos-mesa asked for two things so that drawing on the GPU isn't slowed
+down by reading each frame back from uncached memory:
 
-  *V3DReset       ends every GPU job (running or waiting) and resets
-                  the GPU; programs waiting on them are told they failed
-  *V3DReset all   the same, and closes every V3DRender file left open
-                  by programs that stopped without closing (Alt-Break,
-                  an error); any program still using the GPU must start
-                  again
+  - BOs the CPU maps cacheable (V3DRender keeps the caches right around
+    each GPU job), and
+  - the GPU drawing straight into the program's own memory (a sprite,
+    the screen): "importing" it.
 
-V3DRender also now resets a job that has run for 5 seconds even if it
-keeps moving (before, only one that stopped moving for 0.5 s).
+Check's new test 11 draws a 1920x1080 frame into each kind - uncached
+as before, cached, and imported - after the CPU has read the old
+contents (so a missing cache invalidate would show), checks every
+pixel, draws a second frame on the same memory, and prints how fast
+the CPU reads the frame back. Please send Results: the MB/s figures
+are what riscos-mesa needs.
 
-HangTest has a new test 10: a job that never ends with a frame queued
-behind it, both ended at once by the reset, and the GPU working after.
-Check (tests 1-8) runs as before on 0.10. The buffer area is still
-256 MB unless set (*RMLoad V3DRender Size <MB>).
+Everything from kit 12 (*V3DReset, HangTest's test 10) is unchanged.
 
 Before you start
 - A Pi 4, Pi 400 or CM4 with RISC OS 5.30 or later. V3DDriver not

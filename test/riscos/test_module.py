@@ -187,6 +187,12 @@ class Pi4(Machine):
                 self.phys_next += r[1] // 4096
                 return
             if reason == 65:
+                um = getattr(self, "user_mem", None)
+                if um and um[0] <= r[1] < um[0] + um[1]:
+                    pa = 0x500000000 + (r[1] - um[0])     # the program's memory
+                    out(0, pa & 0xFFFFFFFF)
+                    out(1, pa >> 32)
+                    return
                 for a in self.areas.values():
                     i = (r[1] - a["base"]) // 4096
                     if 0 <= i < a["pages"] and i in a["mapped"]:
@@ -297,7 +303,7 @@ class Pi4(Machine):
                         self.uc.mem_unmap(addr, 4096)
                 else:
                     check(page in a["claimed"], "a mapped page was claimed")
-                    check(flags & (1 << 5), "pages aren't cached")
+                    a.setdefault("flags", {})[idx] = flags
                     a["mapped"][idx] = page
                     self.uc.mem_map(addr, 4096)
                     self.uc.mem_write(addr, b"\xAA" * 4096)
@@ -344,7 +350,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 10 and out[8] != 0, "version 0.10, statistics in r8")
+    check(out[0] == 11 and out[8] != 0, "version 0.11, statistics in r8")
     stats_addr = out[8]
 
     # RISC3D: registered as a DRM device; its calls open, describe, close
@@ -421,11 +427,46 @@ def main():
     check(ret == 0 and (offset >> 12) not in bo_area["mapped"], "GEM_CLOSE gives the pages back")
     check(m.core.get(R["CTL_INT_STS"], 0) == 0, "the interrupts were acknowledged")
 
+    check(all(fl & (1 << 5) for fl in bo_area.get("flags", {}).values()),
+          "ordinary BOs are mapped not cacheable")
+
+    # (0.11) a cached BO, and the program's memory imported, through a job
+    ret, b = ioctl(R["IOCTL_CREATE_BO"], struct.pack("<IIII", 8192, 0x80000000, 0, 0))
+    ch, coff = struct.unpack("<IIII", b)[2], struct.unpack("<IIII", b)[3]
+    check(ret == 0 and not bo_area["flags"][coff >> 12] & (1 << 5)
+          and bo_area["flags"][coff >> 12] & (1 << 15), "a cached BO: mapped cacheable, locked")
+    ret, _ = ioctl(R["IOCTL_CREATE_BO"], struct.pack("<IIII", 4096, 1, 0, 0))
+    check(ret == -22, "an unknown CREATE_BO flag is refused")
+    UMEM = 0x48000000
+    m.uc.mem_map(UMEM, 0x10000)
+    m.user_mem = (UMEM, 0x10000)
+    ret, b = ioctl(R["IOCTL_IMPORT_MEMORY"], struct.pack("<QIIII", UMEM + 0x1000, 0x3000, 0, 0, 0))
+    ih, ioff = struct.unpack("<QIIII", b)[2], struct.unpack("<QIIII", b)[3]
+    check(ret == 0 and ih and ioff, "IMPORT_MEMORY: handle %d at GPU &%X" % (ih, ioff))
+    pte = m.word(pt["base"] + (ioff >> 12) * 4)
+    check((pte & 0xFFFFFF) == (0x500001000 >> 12) & 0xFFFFFF and pte & (1 << 28),
+          "the GPU's MMU points at the program's memory: &%08X" % pte)
+    ret, b = ioctl(R["IOCTL_MMAP_BO"], struct.pack("<IIQ", ih, 0, 0))
+    check(ret == 0 and struct.unpack("<IIQ", b)[2] == UMEM + 0x1000, "MMAP_BO gives its own address")
+    check((ioff >> 12) not in bo_area["mapped"], "and no buffer-area page was taken for it")
+    m.uc.mem_write(hlist, struct.pack("<II", ch, ih))
+    cl = struct.pack("<9I4xQ4IQ", 0x1000, 0x1040, 0x2000, 0x2040, 0, 0, sync,
+                     0x3000, 0x8000, hlist, 2, 0, 0, 0, 0)
+    ret, _ = ioctl(R["IOCTL_SUBMIT_CL"], cl)
+    check(ret == 0, "SUBMIT_CL with both (the caches cleaned by address)")
+    m.finish(R["INT_FLDONE"])
+    m.finish(R["INT_FRDONE"])
+    check(wait(0) == 0, "done (and invalidated before the wait returned)")
+    for h in (ch, ih):
+        ret, _ = ioctl(R["IOCTL_GEM_CLOSE"], struct.pack("<II", h, 0))
+        check(ret == 0, "GEM_CLOSE %d" % h)
+    check(not m.word(pt["base"] + (ioff >> 12) * 4) & (1 << 28), "the import is out of the MMU")
+
     m.output = ""
     err = mod.command("V3DRender")
-    check(err is None and "Render jobs:           1" in m.output, "*V3DRender")
-    check(m.word(stats_addr + 4 * 1) == 1 and m.word(stats_addr + 4 * 5) == 2,
-          "the statistics block: 1 render job, 2 interrupts")
+    check(err is None and "Render jobs:           2" in m.output, "*V3DRender")
+    check(m.word(stats_addr + 4 * 1) == 2 and m.word(stats_addr + 4 * 5) == 4,
+          "the statistics block: 2 render jobs, 4 interrupts")
     print("  " + m.output.replace("\n", "\n  ").rstrip())
 
     check(getattr(m, "domain_sets", None) == [1], "the firmware's V3D domain turned on at load (0.08)")

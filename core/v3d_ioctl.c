@@ -149,7 +149,7 @@ v3d_close (struct v3d_dev *v3d, int f)
 static int
 create_bo (struct v3d_dev *v3d, int f, struct drm_v3d_create_bo *args)
 {
-  if (args->flags != 0)
+  if (args->flags & ~DRM_RISCOS_BO_CPU_CACHED)
     return -V3D_EINVAL;
   uint16_t *handles = v3d->files[f].handles;
   uint32_t h;
@@ -158,9 +158,34 @@ create_bo (struct v3d_dev *v3d, int f, struct drm_v3d_create_bo *args)
   if (h == V3D_MAX_HANDLES)
     return -V3D_ENOSPC;
   v3d_service (v3d);
-  int bo, ret = v3d_bo_create (v3d, args->size, &bo);
+  int bo, ret = v3d_bo_create_cached (v3d, args->size,
+				      (args->flags & DRM_RISCOS_BO_CPU_CACHED) != 0, &bo);
   if (ret)
     return ret;
+  v3d->bos[bo].file = (int16_t) f;
+  handles[h] = (uint16_t) bo;
+  args->handle = h;
+  args->offset = v3d_bo_offset (v3d, bo);
+  return 0;
+}
+
+/* (0.11) DRM_IOCTL_RISCOS_IMPORT_MEMORY */
+static int
+import_memory (struct v3d_dev *v3d, int f, struct drm_riscos_import_memory *args)
+{
+  uint16_t *handles = v3d->files[f].handles;
+  uint32_t h;
+  for (h = 1; h < V3D_MAX_HANDLES && handles[h]; h++)
+    ;
+  if (h == V3D_MAX_HANDLES)
+    return -V3D_ENOMEM;
+  v3d_service (v3d);
+  if (args->pad || (uint64_t) (uintptr_t) args->address != args->address)
+    return -V3D_EINVAL;
+  int bo, ret = v3d_bo_import (v3d, (uintptr_t) args->address, args->size, &bo);
+  if (ret)
+    return ret;
+  v3d->bos[bo].file = (int16_t) f;
   handles[h] = (uint16_t) bo;
   args->handle = h;
   args->offset = v3d_bo_offset (v3d, bo);
@@ -272,6 +297,7 @@ lookup_bos (struct v3d_dev *v3d, int f, struct v3d_job *job,
       if (!bo)
 	return -V3D_ENOENT;
       v3d_bo_get (v3d, bo);
+      v3d_bo_cpu_clean (v3d, bo);		/* (0.11) cached/imported: to memory */
       job->bos[job->nbos++] = (uint16_t) bo;
     }
   return 0;
@@ -628,6 +654,7 @@ union v3d_args
   struct drm_v3d_get_param get_param;
   struct drm_v3d_create_bo create_bo;
   struct drm_v3d_mmap_bo mmap_bo;
+  struct drm_riscos_import_memory import_memory;
   struct drm_v3d_get_bo_offset get_bo_offset;
   struct drm_v3d_wait_bo wait_bo;
   struct drm_v3d_submit_cl submit_cl;
@@ -700,7 +727,16 @@ v3d_ioctl (struct v3d_dev *v3d, int f, uint32_t request, void *arg)
       {
       case 0x00: ret = sync_file (v3d, &a.sync_file, 1); break;
       case 0x01: ret = sync_file (v3d, &a.sync_file, 0); break;
+      case 0x02: ret = import_memory (v3d, f, &a.import_memory); break;
       }
+  /* (0.11) whatever the request, the file's cached and imported BOs that
+     jobs have written are invalidated before it returns: a wait that saw
+     a job finish is followed by the CPU reading what it wrote */
+  if (v3d->files[f].nstale || v3d->retired)
+    {
+      v3d_service (v3d);
+      v3d_file_caches (v3d, f);
+    }
 
   if ((ret == 0 || ret == -V3D_ETIME) && (dir & _IOC_READ) && usize)
     memcpy (arg, &a, usize);

@@ -30,7 +30,7 @@
 #include "v3d_regs.h"
 #include "plat_pi4.h"
 
-#define VERSION 10		/* 0.10 */
+#define VERSION 11		/* 0.11 */
 #define SWI_BASE 0xC3D40
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C

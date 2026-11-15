@@ -76,3 +76,47 @@ Mesa's EGL can then:
 3. Run Mesa's v3d gallium driver on that file (as riscos-mesa-v3d does on
    the older module), with the layer above in place of libdrm's.
 4. `RISC3D_Close` when the display is terminated.
+
+## Frames the CPU reads back (0.11)
+
+riscos-mesa reads every finished frame back from its BO into a sprite or
+screen memory. Normal BOs are mapped non-cacheable for the CPU, so those
+reads run at about 210-220 MB/s. Since 0.11 there are two ways round that.
+Both are RISC OS only, in `include/drm/drm.h`.
+
+**`DRM_RISCOS_BO_CPU_CACHED`** (`0x80000000`) in `drm_v3d_create_bo.flags`:
+
+- The BO is mapped cacheable (write-back) for the CPU.
+- V3DRender cleans its lines from the CPU's caches when a job that lists
+  it is submitted.
+- After such a job, it invalidates them before the file's next request
+  returns. So once a wait has seen the job finish, the CPU reads what the
+  GPU wrote.
+- Put the BO in the job's `bo_handles`, as Mesa does for every BO a job
+  uses.
+
+**`DRM_IOCTL_RISCOS_IMPORT_MEMORY`** (`'R'`, nr 2, `struct
+drm_riscos_import_memory { __u64 address; __u32 size, handle, offset, pad;
+}`):
+
+- Memory the program already has (a sprite, screen memory) becomes a BO.
+  `address` and `size` must be multiples of 4 KB. It returns `handle` and
+  `offset` (the GPU address).
+- V3DRender looks up each page's physical address (OS_Memory 65) and maps
+  them in the GPU's MMU. Nothing is copied or zeroed.
+- `MMAP_BO` gives back the program's own address.
+- The caches are kept as for a cached BO.
+- `GEM_CLOSE` takes it out of the GPU's address space once no job uses it.
+- **The memory must stay where it is until then:** the same logical and
+  physical pages. It must also be mapped when the program calls V3DRender,
+  because the cache maintenance is done by address in the program's
+  context (application space included).
+- V3DRender doesn't follow pages that RISC OS moves (Service_PagesUnsafe).
+  Sprite areas, application space and screen memory don't move while in
+  use.
+- A `*V3DDump` lists imported BOs without their contents.
+
+Mesa's v3d driver makes a render target from a GEM handle
+(`resource_from_handle`, raster with a stride), so an imported sprite or
+the screen can be drawn into directly.
+

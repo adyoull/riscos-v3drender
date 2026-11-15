@@ -217,8 +217,9 @@ v3d_record_hang (struct v3d_dev *v3d, struct v3d_job *job)
   for (int i = 0; i < 8; i++)
     {
       uint32_t a = h->words_at + 4 * i;
-      h->words[i] = ca && v3d_page_used (v3d, a >> V3D_MMU_PAGE_SHIFT)
-	? *(volatile uint32_t *) (v3d->area + a) : 0;
+      int abo = ca ? v3d_bo_at (v3d, a) : 0;
+      h->words[i] = abo && !v3d->bos[abo].imported
+	? *(volatile uint32_t *) (v3d->area + a) : 0;	/* (imported: maybe not mapped now) */
     }
   if (v3d->stats.first_hang.q == ~0u)
     v3d->stats.first_hang = *h;
@@ -242,7 +243,7 @@ v3d_dump_hang (struct v3d_dev *v3d, struct v3d_job *job)
     {
       int bo = i < r->nbos ? r->bos[i] : r->overflow[i - r->nbos];
       uint32_t size = v3d->bos[bo].npages << V3D_MMU_PAGE_SHIFT;
-      bytes += 8 + (size <= V3D_DUMP_MAX_BO ? size : 0);
+      bytes += 8 + (size <= V3D_DUMP_MAX_BO && !v3d->bos[bo].imported ? size : 0);
     }
   uint32_t *w = plat_dump_buffer (bytes);
   if (!w)
@@ -267,8 +268,8 @@ v3d_dump_hang (struct v3d_dev *v3d, struct v3d_job *job)
     {
       int bo = i < r->nbos ? r->bos[i] : r->overflow[i - r->nbos];
       uint32_t size = v3d->bos[bo].npages << V3D_MMU_PAGE_SHIFT;
-      if (size > V3D_DUMP_MAX_BO)
-	size = 0;			/* too big to keep: listed only */
+      if (size > V3D_DUMP_MAX_BO || v3d->bos[bo].imported)
+	size = 0;			/* too big, or the program's: listed only */
       *p++ = v3d_bo_offset (v3d, bo);
       *p++ = size;
       const volatile uint32_t *src = (const volatile uint32_t *) v3d_bo_cpu (v3d, bo);
@@ -613,10 +614,10 @@ v3d_mmu_insert_ptes (struct v3d_dev *v3d, int bo)
   while (page < end)
     {
       /* a run of pages whose physical addresses follow on */
-      uint32_t pfn = (uint32_t) (plat_page_pa (v3d, page) >> V3D_MMU_PAGE_SHIFT);
+      uint32_t pfn = (uint32_t) (v3d_bo_page_pa (v3d, bo, page - b->first) >> V3D_MMU_PAGE_SHIFT);
       uint32_t run = 1;
       while (page + run < end
-	     && (uint32_t) (plat_page_pa (v3d, page + run) >> V3D_MMU_PAGE_SHIFT)
+	     && (uint32_t) (v3d_bo_page_pa (v3d, bo, page + run - b->first) >> V3D_MMU_PAGE_SHIFT)
 		== pfn + run)
 	run++;
       while (run > 0)

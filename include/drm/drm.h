@@ -90,6 +90,28 @@ struct drm_riscos_sync_file { __s32 fd; __s32 timeout_ms; __u32 signalled, pad; 
 #define DRM_IOCTL_RISCOS_SYNC_FILE_CLOSE \
   _IOC (_IOC_WRITE, DRM_RISCOS_BASE, 0x01, sizeof (struct drm_riscos_sync_file))
 
+/* RISC OS only (0.11), riscos-mesa's two requests for reading frames:
+
+   - DRM_RISCOS_BO_CPU_CACHED in drm_v3d_create_bo.flags: the BO is
+     mapped cacheable for the CPU. V3DRender cleans its lines from the
+     CPU's caches when a job using it is submitted, and invalidates them
+     after the job, before the file's next request returns (so after the
+     wait that saw it finish).
+   - DRM_IOCTL_RISCOS_IMPORT_MEMORY: memory the program already has (a
+     sprite, screen memory), page-aligned, becomes a BO in the GPU's
+     address space: a handle and its GPU address. It is not copied or
+     zeroed. MMAP_BO gives the program's own address back. Caches are
+     kept as for a cached BO. GEM_CLOSE takes it out of the GPU's address
+     space once no job uses it. The memory must stay where it is (same
+     logical and physical pages) until then, and be mapped in the context
+     of the program's V3DRender calls. */
+#define DRM_RISCOS_BO_CPU_CACHED 0x80000000u
+/* address: a pointer, 64 bits as Linux's uAPI passes them; offset: the
+   GPU address (as CREATE_BO's) */
+struct drm_riscos_import_memory { __u64 address; __u32 size, handle, offset, pad; };
+#define DRM_IOCTL_RISCOS_IMPORT_MEMORY \
+  _IOC (_IOC_READ | _IOC_WRITE, DRM_RISCOS_BASE, 0x02, sizeof (struct drm_riscos_import_memory))
+
 /* V3DRender's clock for absolute timeouts (drm_syncobj_wait): nanoseconds
    since the machine started, counted as OS_ReadMonotonicTime * 10,000,000.
    INT64_MAX waits for ever. */

@@ -27,7 +27,24 @@ static struct v3d_dev *dev;
 
 uint32_t v3d_rd (struct v3d_dev *v, int b, uint32_t o) { (void) v; return regs[b][o / 4]; }
 uint64_t plat_page_pa (struct v3d_dev *v, uint32_t p) { (void) v; return 0x100000000ull + p * 4096ull; }
-int plat_pages_claim (struct v3d_dev *v, uint32_t f, uint32_t n) { (void) v; memset (area + f * 4096, 0xAA, n * 4096); return 0; }
+int plat_pages_claim (struct v3d_dev *v, uint32_t f, uint32_t n, int c) { (void) v; (void) c; memset (area + f * 4096, 0xAA, n * 4096); return 0; }
+/* (0.11) imported memory: the program's pages get physical addresses
+   from &300000000, and the simulated GPU reaches them through its PTEs */
+static uint8_t *import_page[65536];
+static unsigned nimport;
+uint64_t plat_virt_pa (uintptr_t va)
+{
+  for (unsigned i = 0; i < nimport; i++)
+    if (import_page[i] == (uint8_t *) va)
+      return 0x300000000ull + i * 4096ull;
+  if (nimport == 65536)
+    return 0;
+  import_page[nimport] = (uint8_t *) va;
+  return 0x300000000ull + nimport++ * 4096ull;
+}
+unsigned cache_cleans, cache_invals;
+void plat_cache_clean (const void *p, uint32_t n) { (void) p; (void) n; cache_cleans++; }
+void plat_cache_inval (const void *p, uint32_t n) { (void) p; (void) n; cache_invals++; }
 void plat_pages_release (struct v3d_dev *v, uint32_t f, uint32_t n) { (void) v; (void) f; (void) n; }
 void plat_gpu_reset (struct v3d_dev *v) { (void) v; resets++; hung = 0; csd_hung = 0; memset (busy, 0, sizeof busy); }
 uint32_t plat_time_cs (void) { return time_cs; }
@@ -48,6 +65,9 @@ va (uint32_t a)
       printf ("SIM: the GPU read or wrote an unmapped address &%x\n", a);
       exit (2);
     }
+  uint64_t pa = (uint64_t) (pt[a >> 12] & 0xFFFFFF) << 12;
+  if (pa >= 0x300000000ull)
+    return import_page[(pa - 0x300000000ull) >> 12] + (a & 4095);
   return area + a;
 }
 

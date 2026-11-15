@@ -15,7 +15,12 @@ void v3d_wr (struct v3d_dev *v3d, int bank, uint32_t off, uint32_t val);
 
 /* BO pages: claim and map (writable by programs, not cached, bufferable)
    or unmap and release pages first .. first+n-1 of the area. */
-int plat_pages_claim (struct v3d_dev *v3d, uint32_t first, uint32_t n);
+int plat_pages_claim (struct v3d_dev *v3d, uint32_t first, uint32_t n, int cached);
+/* (0.11) the physical address of the page at a logical address (0: not
+   mapped); the CPU's data caches cleaned or invalidated by address */
+uint64_t plat_virt_pa (uintptr_t va);
+void plat_cache_clean (const void *p, uint32_t bytes);
+void plat_cache_inval (const void *p, uint32_t bytes);
 void plat_pages_release (struct v3d_dev *v3d, uint32_t first, uint32_t n);
 uint64_t plat_page_pa (struct v3d_dev *v3d, uint32_t page);	/* after claim */
 

@@ -157,7 +157,18 @@ static void
 release_job (struct v3d_dev *v3d, struct v3d_job *job)
 {
   for (uint32_t i = 0; i < job->nbos; i++)
-    v3d_bo_put (v3d, job->bos[i]);
+    {
+      /* (0.11) the CPU's copy of a cached or imported BO is invalidated
+	 before its file next sees it (v3d_file_caches, in its context) */
+      struct v3d_bo *b = &v3d->bos[job->bos[i]];
+      if ((b->cached || b->imported) && !b->stale && b->file >= 0
+	  && v3d->files[b->file].used)
+	{
+	  b->stale = 1;
+	  v3d->files[b->file].nstale++;
+	}
+      v3d_bo_put (v3d, job->bos[i]);
+    }
   plat_free (job->bos);
   /* binner overflow memory goes back to the pool (Linux frees it with
      the render job) */

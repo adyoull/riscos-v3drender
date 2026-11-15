@@ -89,6 +89,14 @@ find_pages (struct v3d_dev *v3d, uint32_t n, uint32_t *first)
 int
 v3d_bo_create (struct v3d_dev *v3d, uint32_t bytes, int *bo_out)
 {
+  return v3d_bo_create_cached (v3d, bytes, 0, bo_out);
+}
+
+/* (0.11) cached: the CPU's mapping is cacheable (riscos-mesa's frames
+   read back), with cache maintenance around jobs. */
+int
+v3d_bo_create_cached (struct v3d_dev *v3d, uint32_t bytes, int cached, int *bo_out)
+{
   if (bytes == 0)
     return -V3D_EINVAL;
   uint32_t n = (bytes + V3D_PAGE - 1) / V3D_PAGE, first;
@@ -99,7 +107,7 @@ v3d_bo_create (struct v3d_dev *v3d, uint32_t bytes, int *bo_out)
     ;
   if (bo == V3D_MAX_BOS || !find_pages (v3d, n, &first))
     return -V3D_ENOMEM;
-  if (plat_pages_claim (v3d, first, n))
+  if (plat_pages_claim (v3d, first, n, cached))
     return -V3D_ENOMEM;
   mark (v3d, first, n, 1);
   v3d->pages_used += n;
@@ -109,10 +117,108 @@ v3d_bo_create (struct v3d_dev *v3d, uint32_t bytes, int *bo_out)
   b->first = first;
   b->npages = n;
   b->refs = 1;
+  b->cached = (uint8_t) (cached != 0);
+  b->file = -1;
   memset (v3d_bo_cpu (v3d, bo), 0, n * V3D_PAGE);
+  if (cached)
+    plat_cache_clean (v3d_bo_cpu (v3d, bo), n * V3D_PAGE);	/* the zeroes, to memory */
   v3d_mmu_insert_ptes (v3d, bo);
   *bo_out = bo;
   return 0;
+}
+
+/* (0.11) The program's own memory, page-aligned, in the GPU's address
+   space: a range of the area's pages is taken for its GPU addresses
+   (they are never claimed or mapped for the CPU), and the GPU's MMU
+   points them at the memory's physical pages. */
+int
+v3d_bo_import (struct v3d_dev *v3d, uintptr_t cpu, uint32_t bytes, int *bo_out)
+{
+  if (bytes == 0 || (cpu & (V3D_PAGE - 1)) || (bytes & (V3D_PAGE - 1)))
+    return -V3D_EINVAL;
+  uint32_t n = bytes / V3D_PAGE, first;
+  if (n >= v3d->area_pages)
+    return -V3D_ENOMEM;
+  uint64_t *pa = plat_alloc (n * sizeof *pa);
+  if (!pa)
+    return -V3D_ENOMEM;
+  for (uint32_t i = 0; i < n; i++)
+    if (!(pa[i] = plat_virt_pa (cpu + i * V3D_PAGE)))
+      {
+	plat_free (pa);
+	return -V3D_EFAULT;
+      }
+  int bo;
+  for (bo = 1; bo < V3D_MAX_BOS && v3d->bos[bo].used; bo++)
+    ;
+  if (bo == V3D_MAX_BOS || !find_pages (v3d, n, &first))
+    {
+      plat_free (pa);
+      return -V3D_ENOMEM;
+    }
+  mark (v3d, first, n, 1);
+  struct v3d_bo *b = &v3d->bos[bo];
+  memset (b, 0, sizeof *b);
+  b->used = 1;
+  b->first = first;
+  b->npages = n;
+  b->refs = 1;
+  b->imported = 1;
+  b->file = -1;
+  b->cpu = cpu;
+  b->pa = pa;
+  v3d_mmu_insert_ptes (v3d, bo);
+  *bo_out = bo;
+  return 0;
+}
+
+uint64_t
+v3d_bo_page_pa (struct v3d_dev *v3d, int bo, uint32_t i)
+{
+  struct v3d_bo *b = &v3d->bos[bo];
+  return b->imported ? b->pa[i] : plat_page_pa (v3d, b->first + i);
+}
+
+int
+v3d_bo_at (struct v3d_dev *v3d, uint32_t gpu)
+{
+  uint32_t page = gpu >> V3D_MMU_PAGE_SHIFT;
+  for (int bo = 1; bo < V3D_MAX_BOS; bo++)
+    {
+      struct v3d_bo *b = &v3d->bos[bo];
+      if (b->used && page >= b->first && page < b->first + b->npages)
+	return bo;
+    }
+  return 0;
+}
+
+/* Cache maintenance (0.11). Both run in the context of the BO's own
+   file's calls, so an imported BO's addresses are the program's. */
+void
+v3d_bo_cpu_clean (struct v3d_dev *v3d, int bo)
+{
+  struct v3d_bo *b = &v3d->bos[bo];
+  if (b->cached || b->imported)
+    plat_cache_clean (v3d_bo_cpu (v3d, bo), b->npages * V3D_PAGE);
+}
+
+void
+v3d_file_caches (struct v3d_dev *v3d, int f)
+{
+  struct v3d_file *file = &v3d->files[f];
+  if (!file->nstale)
+    return;
+  for (int h = 1; h < V3D_MAX_HANDLES && file->nstale; h++)
+    {
+      int bo = file->handles[h];
+      if (bo && v3d->bos[bo].stale)
+	{
+	  plat_cache_inval (v3d_bo_cpu (v3d, bo), v3d->bos[bo].npages * V3D_PAGE);
+	  v3d->bos[bo].stale = 0;
+	  file->nstale--;
+	}
+    }
+  file->nstale = 0;			/* (any left were closed) */
 }
 
 void
@@ -131,9 +237,14 @@ v3d_bo_put (struct v3d_dev *v3d, int bo)
   if (!b->used || --b->refs)
     return;
   v3d_mmu_remove_ptes (v3d, bo);
-  plat_pages_release (v3d, b->first, b->npages);
+  if (b->imported)
+    plat_free (b->pa);			/* the memory is the program's */
+  else
+    {
+      plat_pages_release (v3d, b->first, b->npages);
+      v3d->pages_used -= b->npages;
+    }
   mark (v3d, b->first, b->npages, 0);
-  v3d->pages_used -= b->npages;
   b->used = 0;
 }
 

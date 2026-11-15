@@ -103,7 +103,12 @@ failed, and the GPU is ready for the next program. `*V3DReset all` also
 closes every V3DRender file, with its buffers. Use it when programs stopped
 without closing theirs, for example after Alt-Break or an error in a
 command-line program; a program still using the GPU must start again.
-`V3DRender_Reset` does the same (r0 bit 0 = all). On its own, V3DRender
+`V3DRender_Reset` does the same (r0 bit 0 = all).
+
+For frames the CPU reads back (0.11): CREATE_BO's `DRM_RISCOS_BO_CPU_CACHED`
+flag maps a BO cacheable for the CPU, and `DRM_IOCTL_RISCOS_IMPORT_MEMORY`
+lets the GPU draw into the program's own memory (a sprite, the screen).
+V3DRender does the cache maintenance either way. See docs/INTERFACE.md. On its own, V3DRender
 resets the GPU when a job makes no progress for half a second (as Linux),
 and since 0.10 also when one has run for 5 seconds, even if it still moves. `V3DRender_Debug` (&C3D45) reads
 the GPU's page table (r0 = 0, r1 = GPU address) and the MMU's widths

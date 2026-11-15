@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.11: cached BOs and imported memory, for frames read back (15 November 2026)
+
+This answers riscos-mesa's `2026-11-15-mesa-v3drender-cached-reads-and-import.md`. Their EGL/OSMesa draw on the GPU in about 1 ms a frame at 640x480, then spend about 5.5 ms reading it from an uncached BO, at about 215 MB/s.
+
+- **`DRM_RISCOS_BO_CPU_CACHED`** (CREATE_BO flag `0x80000000`): the CPU's mapping is cacheable.
+  - The BO is cleaned when a job lists it.
+  - It is invalidated, after the job, before the owning file's next request returns.
+  - BOs remember their file; a reaped job marks its cached BOs stale, and the file's next request invalidates them in its own context.
+- **`DRM_IOCTL_RISCOS_IMPORT_MEMORY`**: the program's own page-aligned memory as a BO.
+  - Area pages are taken for the GPU addresses only.
+  - The MMU points at the memory's physical pages (OS_Memory 65).
+  - MMAP_BO returns the program's address.
+  - Cache maintenance as above.
+  - GEM_CLOSE unmaps it after its jobs.
+  - Hang records and dumps never read an imported BO.
+- **Cache maintenance** by address to the point of coherency (DCCMVAC/DCIMVAC, the line size from CTR), in `riscos/header.s`.
+- **Tests:**
+  - sim (1954 checks): the cached flag, clean at submit, one invalidate at the next request, no work for ordinary BOs, an unknown flag refused; an import's PTEs, MMAP_BO, unaligned/zero sizes refused, and an import kept while a job uses it, then unmapped, using no area memory.
+  - Emulator: a cached BO's pages mapped cacheable and locked (ordinary ones still not cacheable); an import's PTE and MMAP_BO, with no area page taken; a job using both, and GEM_CLOSE unmapping the import.
+  - V3DJob test 11 (Check): a 1080p frame drawn into an uncached BO, a cached BO and imported memory, after the CPU has read the old contents into its cache. Every pixel is checked, a second frame is drawn on the same memory, and the CPU's read-back speed is printed.
+
 ## 0.10: recovering after a failed run (15 November 2026)
 
 The owner found V3DRender stuck after a failed run, and asked for a way to reset the GPU and recover.
