@@ -21,6 +21,7 @@ oserror *pi4_clock (uint32_t *hz, uint32_t *max_hz);
 oserror *pi4_set_clock (uint32_t hz, uint32_t *now);
 void pmp_handler (void);		/* the veneer (header.s) */
 extern int pi4_no_wfi;
+extern uint32_t pi4_area_mb;	/* the BO area asked for (0.09) */
 
 #define PI4_LOG 8
 struct pi4_log { const char *msg; uint32_t value; };

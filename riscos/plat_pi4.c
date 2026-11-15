@@ -487,13 +487,16 @@ plat_page_pa (struct v3d_dev *v3d, uint32_t page)
 
 ERROR_BLOCK (err_pt, 0x81D349, "There isn't 4 MB of contiguous memory for the GPU's page table");
 
-/* The BO area: as big as the address space allows, up to 1 GB. The page
-   table: 4 MB contiguous (OS_Memory 12), and a scratch page. */
+/* The BO area (0.09): pi4_area_mb (the Size load option or
+   V3DRender$Size, 256 MB if neither), halved down to 16 MB while the
+   address space can't take it. Only address space: pages are claimed
+   for BOs as they are made. The page table: 4 MB contiguous (OS_Memory
+   12), and a scratch page. */
 oserror *
 pi4_memory (struct v3d_dev *v3d)
 {
   oserror *e = 0;
-  for (uint32_t mb = 1024; mb >= 128; mb /= 2)
+  for (uint32_t mb = pi4_area_mb; mb >= 16; mb /= 2)
     if (!(e = pmp_create (&pi4.bo, "V3DRender buffers", mb * 256)))
       break;
   if (e)
@@ -564,6 +567,7 @@ plat_irq_restore (unsigned cpsr)
 /* Waits for an interrupt (the GPU's, or the 100 Hz timer's) with
    interrupts on. */
 int pi4_no_wfi;
+uint32_t pi4_area_mb = 256;
 void
 plat_wait (void)
 {

@@ -195,6 +195,14 @@ class Pi4(Machine):
                         out(1, pa >> 32)
                         return
                 return self._fail(number, 0xFC, "bad address")
+        if base == 0x23:                          # OS_ReadVarVal
+            name = self.cstr(r[0])
+            val = getattr(self, "vars", {}).get(name)
+            if val is None:
+                return self._fail(number, 0x124, "System variable not found")
+            self.uc.mem_write(r[1], val.encode())
+            out(2, len(val))
+            return
         if base == 0x08 and r[0] == 10:           # OS_File 10: save
             name = bytes(self.uc.mem_read(r[1], 64)).split(b"\r")[0].split(b"\0")[0].decode()
             self.saved = (name, r[2], r[5] - r[4])
@@ -332,10 +340,11 @@ def main():
     check(m.core.get(R["CTL_INT_MSK_CLR"]) not in (None, 0), "interrupts unmasked")
     print("  areas: buffers %d pages at &%08X, page table at physical &%X"
           % (bo_area["pages"], bo_area["base"], pt_pa))
+    check(bo_area["pages"] == 65536, "the buffer area is 256 MB by default (0.09)")
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 8 and out[8] != 0, "version 0.08, statistics in r8")
+    check(out[0] == 9 and out[8] != 0, "version 0.09, statistics in r8")
     stats_addr = out[8]
 
     # RISC3D: registered as a DRM device; its calls open, describe, close
@@ -483,6 +492,24 @@ def main():
     check(initialise(mod2, "NoWFI") is None, "loads on a running V3D")
     check(not any(o == 0x11008 or o == 0x1100C for o, _ in m2.writes), "and doesn't touch the gates")
     check(mod2.finalise() is None, "finalises")
+
+    # the buffer area's size (0.09): the Size option, V3DRender$Size, fallback
+    def area_after(tail, var=None):
+        m3 = Pi4()
+        m3.grafx = 1 << 6
+        m3.asb = {0x11008: 0, 0x1100C: 0}
+        if var is not None:
+            m3.vars = {"V3DRender$Size": var}
+        mod3 = Module(m3, data, 0x20010000)
+        err = initialise(mod3, tail)
+        pages = [a["pages"] for a in m3.areas.values() if a["name"] == "V3DRender buffers"]
+        mod3.finalise()
+        return err, pages[0] if pages else None
+    check(area_after("NoWFI Size 64") == (None, 16384), "Size 64: a 64 MB area")
+    check(area_after("Size=128 NoWFI") == (None, 32768), "Size=128: a 128 MB area")
+    check(area_after("", "32") == (None, 8192), "V3DRender$Size 32: a 32 MB area")
+    check(area_after("Size 64", "32") == (None, 16384), "the option over the variable")
+    check(area_after("Size 1024") == (None, 65536), "Size 1024 where only 256 MB fits: 256 MB")
 
 
 try:

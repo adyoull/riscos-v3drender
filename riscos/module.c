@@ -30,7 +30,7 @@
 #include "v3d_regs.h"
 #include "plat_pi4.h"
 
-#define VERSION 8			/* 0.08 */
+#define VERSION 9			/* 0.09 */
 #define SWI_BASE 0xC3D40
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -300,6 +300,8 @@ mod_final (int fatal)
   return 0;
 }
 
+static uint32_t parse_dec (const char *s);
+
 oserror *
 mod_init (const char *tail, int instance, void *pw)
 {
@@ -307,7 +309,43 @@ mod_init (const char *tail, int instance, void *pw)
   private_word = pw;
   while (tail && *tail == ' ')
     tail++;
-  pi4_no_wfi = tail && (*tail == 'n' || *tail == 'N');	/* "NoWFI" */
+  /* load options (0.09): NoWFI, Size <MB>; else V3DRender$Size (MB) */
+  pi4_no_wfi = 0;
+  pi4_area_mb = 0;
+  for (const char *t = tail; t && *t >= ' ';)
+    {
+      while (*t == ' ')
+	t++;
+      if (*t == '-')
+	t++;
+      if ((t[0] | 32) == 'n' && (t[1] | 32) == 'o')
+	pi4_no_wfi = 1;
+      else if ((t[0] | 32) == 's' && (t[1] | 32) == 'i' && (t[2] | 32) == 'z' && (t[3] | 32) == 'e')
+	{
+	  t += 4;
+	  while (*t == ' ' || *t == '=')
+	    t++;
+	  pi4_area_mb = parse_dec (t);
+	}
+      while (*t > ' ')
+	t++;
+    }
+  if (!pi4_area_mb)
+    {
+      char buf[16];
+      regs r = {{ (unsigned) "V3DRender$Size", (unsigned) buf, sizeof buf - 1, 0, 0 }};
+      if (!swix_regs (OS_ReadVarVal, &r))
+	{
+	  buf[r.r[2] < sizeof buf ? r.r[2] : sizeof buf - 1] = 0;
+	  pi4_area_mb = parse_dec (buf);
+	}
+    }
+  if (!pi4_area_mb)
+    pi4_area_mb = 256;
+  if (pi4_area_mb < 16)
+    pi4_area_mb = 16;
+  if (pi4_area_mb > 2048)
+    pi4_area_mb = 2048;
 
   if (module_present ("V3DDriver"))
     return ERR (err_v3ddriver);

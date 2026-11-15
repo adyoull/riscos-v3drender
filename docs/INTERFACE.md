@@ -42,7 +42,9 @@ raised for those.
 | `DRM_IOCTL_RISCOS_SYNC_FILE_CLOSE` | RISC OS | for `close (fd)` on a sync file |
 | performance monitors, `SUBMIT_CPU` | not yet | `-EINVAL` |
 
-`V3DRender_Info` r8 points to the statistics, `struct v3d_stats` in
+`V3DRender_Info` r4 is the buffer area's size in bytes (load option
+`Size <MB>` or `V3DRender$Size`, 256 MB by default since 0.09); every BO
+must fit in it. r8 points to the statistics, `struct v3d_stats` in
 `core/v3d.h` (words, read only, added to at the end only), for tests.
 
 The structures for the RISC OS requests are in `include/drm/drm.h`.

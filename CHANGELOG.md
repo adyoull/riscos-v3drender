@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.09: the buffer area's size can be set (15 November 2026)
+
+Until now the buffer area was 1 GB, or the biggest of 512, 256 or 128 MB that fitted. It is address space only, but 1 GB of a 32-bit RISC OS's address space is a lot to keep for a whole session. Since 0.09:
+
+- The size is the load option `Size <MB>` (or `Size=<MB>`, `-size`), else the system variable `V3DRender$Size` (MB), else **256 MB**. It is limited to 16-2048 MB, and halved down to 16 MB while the address space can't take it.
+- `NoWFI` is now read as one of several words in any order.
+- `*V3DRender` and `V3DRender_Info` r4 show the size in use.
+- The emulator test checks the default (256 MB), `Size 64`, `Size=128`, the variable, the option over the variable, and the fallback when 1 GB doesn't fit.
+
+A size that follows the RAM (BOs not all mapped for the CPU, the GPU's own 4 GB address space) is a later, bigger change: the owner chose a settable size for now.
+
 ## Kit 10 (V3DRender 0.08, unchanged) (15 November 2026)
 
 Kit 9 on the Pi:

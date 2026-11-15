@@ -94,9 +94,23 @@ structures and the libdrm layer.
 | `V3DRender_Ioctl` (&C3D43) | r0 = file, r1 = request (Linux's number), r2 -> structure | r0 = 0 or -errno |
 | `V3DRender_Reset` (&C3D44) | | |
 
-`*V3DRender` shows the GPU and what it has done; `*V3DClock [MHz]`.
-Loading with the parameter `NoWFI` makes waits spin instead of sleeping
-the CPU until the next interrupt.
+`*V3DRender` shows the GPU and what it has done; `*V3DClock [MHz]`;
+`*V3DPower [cycle]`; `*V3DDump <file>`. `V3DRender_Debug` (&C3D45) reads
+the GPU's page table (r0 = 0, r1 = GPU address) and the MMU's widths
+(r0 = 1).
+
+Load options (0.09), in any order:
+
+- `Size <MB>` (or `Size=<MB>`): the buffer area, 16 to 2048 MB. Without
+  it, the system variable `V3DRender$Size` (MB), else **256 MB**. If the
+  address space can't take that, it is halved until it fits (down to 16
+  MB). The area is address space only: memory is taken as buffers are
+  made and given back when they are freed. All the GPU's buffers must
+  fit in it at once. To change it: `*RMKill V3DRender`, then
+  `*RMLoad V3DRender Size 512`, or `*Set V3DRender$Size 512` in !Boot
+  before V3DRender loads.
+- `NoWFI`: waits spin instead of sleeping the CPU until the next
+  interrupt.
 
 ## V3DDriver
 
