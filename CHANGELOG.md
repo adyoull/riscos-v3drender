@@ -1,5 +1,19 @@
 # Changelog
 
+## Kit 9 (V3DRender 0.08, unchanged) (15 November 2026)
+
+Kit 8 on the Pi:
+- The firmware's V3D domain read "off" at first. PM_GRAFX was &1040 (RSTN, ENAB; on the 2711 the firmware owns the power bits).
+- `*V3DPower cycle` worked (the domain then read "on"), but the replay was unchanged: the Z store still hangs into any memory.
+
+Mesa stores Z only (Buffer to Store 9) into a Z24S8 UIF buffer, which may need a read of memory to keep the stencil bits. V3DJob's tests have never made the TLB read memory. Replay adds four runs:
+- the Z store as Z+stencil (11);
+- the Z store as stencil (10);
+- a Load Tile Buffer General of colour before End of Loads, with no Z store;
+- a Load Tile Buffer General of Z+stencil before End of Loads, with no Z store.
+
+The loads come from a new generic tile list, 512 bytes on in the same BO, which the RCL is re-pointed to. `V3DJob replay FILE show` prints each run's generic tile list without running it; the build machine checked them against the Mesa dump. Load general is opcode 30 (V3DJob had 0x1C).
+
 ## 0.08 and kit 8: the firmware's V3D power domain (15 November 2026)
 
 Kit 7's replay on the Pi:

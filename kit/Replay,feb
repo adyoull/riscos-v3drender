@@ -1,11 +1,7 @@
 | Replay: runs the first job Mesa (riscos-mesa's V3DTri) sent, from the
-| *V3DDump file MesaJob, as sent and with one change at a time. Kit 8:
-| then has the firmware turn the V3D's power domain off and on (as Linux
-| has the firmware power it) and runs them all again. Nothing else should
-| be using the GPU. Each run that hangs takes about 1.3 s.
+| *V3DDump file MesaJob, as sent and with one change at a time, to find
+| what makes the GPU stop. Nothing else should be using the GPU (the job
+| needs its buffer addresses). Each run that hangs takes about 1.3 s.
 RMEnsure V3DRender 0.08 RMLoad <Obey$Dir>.V3DRender
 RMEnsure V3DRender 0.08 Error V3DRender 0.08 didn't load
-V3DPower { >> <Obey$Dir>.Results }
-Run <Obey$Dir>.V3DJob replay <Obey$Dir>.MesaJob -o <Obey$Dir>.Results
-V3DPower cycle { >> <Obey$Dir>.Results }
 Run <Obey$Dir>.V3DJob replay <Obey$Dir>.MesaJob -o <Obey$Dir>.Results

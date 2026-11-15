@@ -449,6 +449,7 @@ test_risc3d (void)
 struct rbo { uint32_t gpu, size; const uint8_t *data; struct bo bo; };
 
 static uint8_t *rd_buf;
+static int replay_show;			/* "replay FILE show": print, don't run */
 static struct bo spare;
 static uint32_t rd_w[12];
 static struct rbo rbos[64];
@@ -579,21 +580,26 @@ gtl_len (uint8_t op)
     case 0x7D: case 0x1A: case 0x1B: case 0x12: case 0x01: return 1;	/* coords implicit, end of loads, end of tile, return, nop */
     case 0x38: case 0x15: case 0x19: return 2;	/* prim list format, branch implicit, clear */
     case 0x36: return 5;			/* instance ID */
-    case 0x1D: case 0x1C: return 13;		/* store / load general */
+    case 0x1D: case 0x1E: return 13;		/* store / load general */
     default: return 0;
     }
 }
 
 enum { NO_CHANGE, NO_Z_STORE, NO_COLOUR_STORE, NO_STORES, NO_PRIMITIVES,
        FS_NOT_4WAY, NO_SCOREBOARD, Z_TO_COLOUR_BO, COLOUR_TO_Z_BO, Z_TO_SPARE_BO,
-       LAST_CHANGE = Z_TO_SPARE_BO };
+       Z_AS_ZSTENCIL, Z_AS_STENCIL, LOAD_COLOUR, LOAD_ZS,
+       LAST_CHANGE = LOAD_ZS };
 static const char *const change_name[] = {
   "as Mesa sent it", "without the Z store", "without the colour store",
   "without either store", "without its primitives (no Branch to Implicit Tile List)",
   "with the fragment shader not 4-way threadable", "with the scoreboard turned off",
   "with the Z store into the colour buffer's memory",
   "with the colour store into the Z buffer's memory, and no Z store",
-  "with the Z store into a new BO" };
+  "with the Z store into a new BO",
+  "with the Z store storing Z+stencil (11) instead of Z (9)",
+  "with the Z store storing stencil (10) instead of Z (9)",
+  "loading colour into the tile first (a TLB read), with no Z store",
+  "loading Z+stencil into the tile first (a TLB read), with no Z store" };
 
 /* the GL Shader State record the bin list names (opcode 64) */
 static uint8_t *
@@ -637,12 +643,23 @@ replay_run (int change)
   uint8_t *g = gs ? replay_cpu (gs) : 0;
   int stores = 0, changed = change == NO_CHANGE;
   uint32_t colour_at = 0, z_at = 0;
+  int ck = -1, zk = -1, lk = -1;		/* colour store, Z store, End of Loads */
   for (uint32_t k = 0; g && k < ge - gs + 1;)
     {
       int n = gtl_len (g[k]);
       if (!n)
 	break;
       int kill = 0;
+      if (g[k] == 0x1A && lk < 0)
+	lk = (int) k;
+      if (g[k] == 0x1D)
+	{
+	  int z = stores > 0;
+	  if (z && zk < 0)
+	    zk = (int) k;
+	  else if (!z && ck < 0)
+	    ck = (int) k;
+	}
       if (g[k] == 0x1D)
 	{
 	  int z = stores++ > 0;			/* Mesa stores colour first, then Z */
@@ -695,6 +712,57 @@ replay_run (int change)
 	  k += (uint32_t) n;
 	}
     }
+  if ((change == Z_AS_ZSTENCIL || change == Z_AS_STENCIL) && g && zk >= 0)
+    {
+      g[zk + 1] = (uint8_t) ((g[zk + 1] & 0xF0) | (change == Z_AS_ZSTENCIL ? 11 : 10));
+      changed = 1;
+    }
+  if ((change == LOAD_COLOUR || change == LOAD_ZS) && g && lk >= 0 && ck >= 0 && zk >= 0
+      && (gs & 0xFFF) < 0x200)
+    {
+      /* a new generic tile list 512 bytes on in the same BO: Mesa's, with
+	 a Load Tile Buffer General (opcode 30, the store's fields) before
+	 End of Loads, and the Z store left out */
+      uint8_t *n = g + 0x200, *o = n;
+      uint32_t k = 0;
+      *o++ = g[0];				/* Tile Coordinates Implicit */
+      const uint8_t *src = change == LOAD_COLOUR ? g + ck : g + zk;
+      memcpy (o, src, 13);
+      o[0] = 0x1E;
+      o[1] &= 0x7F;				/* not flipped */
+      if (change == LOAD_ZS)
+	o[1] = (uint8_t) ((o[1] & 0xF0) | 11);
+      o[3] &= (uint8_t) ~0x04;			/* bit 18: force alpha 1 off */
+      o += 13;
+      for (k = (uint32_t) lk; k < ge - gs;)
+	{
+	  int len = gtl_len (g[k]);
+	  if (!len)
+	    break;
+	  if ((int) k != zk)
+	    {
+	      memcpy (o, g + k, (size_t) len);
+	      o += len;
+	    }
+	  if (g[k] == 0x12)
+	    break;
+	  k += (uint32_t) len;
+	}
+      uint32_t ns = gs + 0x200, ne = ns + (uint32_t) (o - n);
+      for (uint32_t r = 0; rcl && r + 9 <= rd_w[5] - rd_w[4]; r++)
+	if (rcl[r] == 20)
+	  {
+	    uint32_t a;
+	    memcpy (&a, rcl + r + 1, 4);
+	    if (a == gs)
+	      {
+		memcpy (rcl + r + 1, &ns, 4);
+		memcpy (rcl + r + 5, &ne, 4);
+		changed = 1;
+		break;
+	      }
+	  }
+    }
   uint8_t *rec = replay_record ();
   if (rec && change == FS_NOT_4WAY)
     {
@@ -707,6 +775,26 @@ replay_run (int change)
       changed = 1;
     }
   printf ("\n  The job %s%s\n", change_name[change], changed ? "" : " (not found: run as sent)");
+  if (replay_show)
+    {
+      /* the generic tile list the RCL now names */
+      for (uint32_t r = 0; rcl && r + 9 <= rd_w[5] - rd_w[4]; r++)
+	if (rcl[r] == 20)
+	  {
+	    uint32_t a, b;
+	    memcpy (&a, rcl + r + 1, 4);
+	    memcpy (&b, rcl + r + 5, 4);
+	    uint8_t *q = replay_cpu (a);
+	    if (!q || b <= a || b - a > 256)
+	      continue;
+	    printf ("    generic tile list &%08X-&%08X:", a, b);
+	    for (uint32_t i = 0; i < b - a; i++)
+	      printf (" %02x", q[i]);
+	    printf ("\n");
+	    break;
+	  }
+      return;
+    }
   struct drm_v3d_submit_cl c = {
     .bcl_start = rd_w[6], .bcl_end = rd_w[7], .rcl_start = rd_w[4], .rcl_end = rd_w[5],
     .qma = rd_w[8], .qms = rd_w[9], .qts = rd_w[10], .out_sync = sync,
@@ -744,6 +832,8 @@ main (int argc, char **argv)
       hang = 1;
     else if (!strcmp (argv[i], "replay") && i + 1 < argc)
       replay = argv[++i];
+    else if (!strcmp (argv[i], "show"))
+      replay_show = 1;
     else if (!strcmp (argv[i], "-o") && i + 1 < argc)
       results = fopen (results_path = argv[++i], "a");	/* add to the file */
   unsigned ver, v3d, hz;

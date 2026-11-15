@@ -1,25 +1,23 @@
-V3DRender 0.08: kit 8, the V3D's power
-=======================================
+V3DRender 0.08: kit 9, Z store or tile-buffer reads?
+=====================================================
 
-Kit 7: Mesa's Z store hangs into any memory (its own buffer, the colour
-buffer's, a new one), while the colour store works into the Z buffer's
-memory. So the memory is fine and storing Z itself never finishes. The
-same job runs on Linux, so something about how the GPU was started
-differs. Linux has the Pi's firmware power the V3D (its power domain),
-and a full power-up includes steps such as the repair of the GPU's own
-RAMs (its tile buffers among them). V3DRender only ever started its
-clock and pulsed its reset.
+Kit 8: turning the V3D's power domain off and on through the firmware
+changed nothing; Mesa's Z store still never finishes, wherever it
+writes.
 
-V3DRender 0.08 asks the firmware for the power domain at load (when
-the GPU isn't already running), and adds *V3DPower: it shows the
-domain and the power register, and *V3DPower cycle has the firmware
-turn the domain off and on.
+Mesa's depth buffer is Z24S8 (depth and stencil in one word), and its
+job stores only Z into it. To keep the stencil bits, the GPU may have
+to read the buffer's memory back while it stores. V3DJob's own tests
+have never made the tile buffer read memory. Replay now also runs the
+job:
 
-Replay now runs the job (and its changes) once as things are, then
-*V3DPower cycle, then again. If the Z store works after the cycle,
-that was it.
+  - storing Z+stencil (11) instead of Z (9);
+  - storing stencil (10) instead of Z;
+  - loading colour into the tile from memory first (no Z store);
+  - loading Z+stencil into the tile from memory first (no Z store).
 
-If the machine freezes at the cycle, restart and say so.
+If the loads hang too, the GPU's tile buffer can't read memory here;
+if Z+stencil stores work, it's the partial (read-back) store.
 
 Before you start
 - A Pi 4, Pi 400 or CM4 with RISC OS 5.30 or later. V3DDriver not
