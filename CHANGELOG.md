@@ -1,5 +1,10 @@
 # Changelog
 
+## Documentation (15 November 2026)
+
+- docs/INTERFACE.md now states the owner's rule: programs use V3DRender only through RISC3D (`RISC3D_Info`, `RISC3D_Open`, and the ioctl SWI that RISC3D names). The direct SWIs are for V3DRender's own tools and kits, and for RISC3D.
+- riscos-mesa's libdrm layer works that way since 15 November. On the Pi, ES 2.0 at 1920x1080 ran 100 frames in 37 cs through RISC3D.
+
 ## 0.09: the buffer area's size can be set (15 November 2026)
 
 Until now the buffer area was 1 GB, or the biggest of 512, 256 or 128 MB that fitted. It is address space only, but 1 GB of a 32-bit RISC OS's address space is a lot to keep for a whole session. Since 0.09:
