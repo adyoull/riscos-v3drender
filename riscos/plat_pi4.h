@@ -10,6 +10,10 @@ struct pmp { unsigned area; uint8_t *base; uint32_t pages; };
 int pi4_soc (void);			/* 3 = BCM2711; -1 = no answer */
 oserror *pi4_map (void);
 oserror *pi4_power_on (int *was_up);
+oserror *pi4_domain (uint32_t *state);
+oserror *pi4_set_domain (uint32_t on);
+oserror *pi4_power_cycle (void);
+uint32_t pi4_pm_grafx (void);
 int pi4_v3d_is_up (void);
 oserror *pi4_memory (struct v3d_dev *v3d);
 void pi4_memory_free (void);

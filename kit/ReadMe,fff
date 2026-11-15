@@ -1,27 +1,32 @@
-V3DRender 0.07: kit 7, Mesa's Z store
-======================================
+V3DRender 0.08: kit 8, the V3D's power
+=======================================
 
-Kit 6 found it: Mesa's first job finishes at once without its Z store
-(the depth buffer written from the tile to memory), and hangs in every
-other form. Kit 7's Replay runs the job again, now also:
+Kit 7: Mesa's Z store hangs into any memory (its own buffer, the colour
+buffer's, a new one), while the colour store works into the Z buffer's
+memory. So the memory is fine and storing Z itself never finishes. The
+same job runs on Linux, so something about how the GPU was started
+differs. Linux has the Pi's firmware power the V3D (its power domain),
+and a full power-up includes steps such as the repair of the GPU's own
+RAMs (its tile buffers among them). V3DRender only ever started its
+clock and pulsed its reset.
 
-  - with the Z store into the colour buffer's memory;
-  - with the colour store into the Z buffer's memory (and no Z store);
-  - with the Z store into a new buffer;
+V3DRender 0.08 asks the firmware for the power domain at load (when
+the GPU isn't already running), and adds *V3DPower: it shows the
+domain and the power register, and *V3DPower cycle has the firmware
+turn the domain off and on.
 
-and lists where each buffer's pages are in memory, as the GPU sees
-them. If the Z buffer's memory is the problem, the Z store works
-elsewhere and the colour store fails there; if storing Z is, the Z
-store fails everywhere.
+Replay now runs the job (and its changes) once as things are, then
+*V3DPower cycle, then again. If the Z store works after the cycle,
+that was it.
 
-V3DRender 0.07 adds the call Replay uses to read the GPU's page table.
+If the machine freezes at the cycle, restart and say so.
 
 Before you start
 - A Pi 4, Pi 400 or CM4 with RISC OS 5.30 or later. V3DDriver not
   loaded. Copy this folder to a hard disc.
 
 The test
-1. Double-click Replay. It loads V3DRender 0.07 from this folder, in
+1. Double-click Replay. It loads V3DRender 0.08 from this folder, in
    place of an older one. No program should be using the GPU at the same time:
    Replay needs the buffer addresses Mesa's job had.
 2. Optional: double-click Check too (kits 1-5's tests, all passed in

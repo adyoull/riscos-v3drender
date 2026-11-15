@@ -28,7 +28,7 @@ module_start:
 	.word	flags - module_start
 
 title:	.asciz	"V3DRender"
-help:	.asciz	"V3DRender\t0.07 (15 Nov 2026) Pi 4 GPU driver (V3D 4.2), after Linux's v3d"
+help:	.asciz	"V3DRender\t0.08 (15 Nov 2026) Pi 4 GPU driver (V3D 4.2), after Linux's v3d"
 swi_names:
 	.asciz	"V3DRender\0Info\0Open\0Close\0Ioctl\0Reset\0Debug\0"
 	.align	2
@@ -51,11 +51,19 @@ commands:
 	.word	0x00010001			@ 1 parameter
 	.word	0
 	.word	dump_help - module_start
+	.asciz	"V3DPower"
+	.align	2
+	.word	cm_command_3 - module_start
+	.word	0x00010000			@ 0-1 parameters
+	.word	0
+	.word	power_help - module_start
 	.word	0
 cmd_help:
 	.asciz	"*V3DRender shows the GPU, its memory and what it has done.\rSyntax: *V3DRender"
 dump_help:
 	.asciz	"*V3DDump saves what the GPU's buffers held when a job first hung since V3DRender was loaded, with its registers, for V3DRender's tools/v3ddump.py.\rSyntax: *V3DDump <file>"
+power_help:
+	.asciz	"*V3DPower shows the V3D's power: the firmware's power domain and PM_GRAFX. *V3DPower cycle has the firmware turn the domain off and on, then resets the GPU (only while nothing uses it).\rSyntax: *V3DPower [cycle]"
 clock_help:
 	.asciz	"*V3DClock shows or sets the GPU's clock, in MHz (0: the firmware's maximum).\rSyntax: *V3DClock [<MHz>]"
 	.align	2
@@ -129,3 +137,4 @@ driver_entry:
 	CM_COMMAND 0
 	CM_COMMAND 1
 	CM_COMMAND 2
+	CM_COMMAND 3

@@ -164,6 +164,13 @@ class Pi4(Machine):
                 resp[6] = a1
             elif tag == 0x00030001:
                 resp[6] = 0
+            elif tag == 0x00030030:               # GET_DOMAIN_STATE
+                resp[6] = getattr(self, "domain", 0) if a0 == 10 else 0
+            elif tag == 0x00038030:               # SET_DOMAIN_STATE
+                if a0 == 10:
+                    self.domain = a1
+                    self.domain_sets = getattr(self, "domain_sets", []) + [a1]
+                resp[6] = a1
             for i, v in enumerate(resp):
                 self.set_word(r[1] + 4 * i, v)
             return
@@ -328,7 +335,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 7 and out[8] != 0, "version 0.07, statistics in r8")
+    check(out[0] == 8 and out[8] != 0, "version 0.08, statistics in r8")
     stats_addr = out[8]
 
     # RISC3D: registered as a DRM device; its calls open, describe, close
@@ -412,6 +419,12 @@ def main():
           "the statistics block: 1 render job, 2 interrupts")
     print("  " + m.output.replace("\n", "\n  ").rstrip())
 
+    check(getattr(m, "domain_sets", None) == [1], "the firmware's V3D domain turned on at load (0.08)")
+    m.output = ""
+    err = mod.command("V3DPower")
+    check(err is None and "power domain: on" in m.output and "PM_GRAFX" in m.output,
+          "*V3DPower: %s" % m.output.strip().replace("\n", " / "))
+
     # a bin job that hangs on a list in a BO: *V3DRender shows where (0.05)
     ret, b = ioctl(R["IOCTL_CREATE_BO"], struct.pack("<IIII", 4096, 0, 0, 0))
     h2, off2 = struct.unpack("<IIII", b)[2], struct.unpack("<IIII", b)[3]
@@ -450,6 +463,10 @@ def main():
 
     out, e = mod.swi(2, {0: f})
     check(e is None, "V3DRender_Close")
+    m.output = ""
+    err = mod.command("V3DPower", "cycle", 1)
+    check(err is None and "off and on again" in m.output and m.domain_sets[-2:] == [0, 1],
+          "*V3DPower cycle: %s" % m.output.strip().replace("\n", " / "))
     err = mod.finalise()
     check(err is None, "finalises: %s" % err)
     check(m.vector is None, "the device vector is released")

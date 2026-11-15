@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.08 and kit 8: the firmware's V3D power domain (15 November 2026)
+
+Kit 7's replay on the Pi:
+- the Z store hangs into the Z buffer's memory, into the colour buffer's, and into a new BO;
+- the colour store into the Z buffer's memory works;
+- every page is below 2^35, the MMU's physical width.
+
+So it isn't the memory: storing the Z/stencil tile buffer never finishes.
+
+Linux has the firmware power the V3D's domain (raspberrypi-power, RPI_POWER_DOMAIN_V3D = 10) before v3d probes. V3DRender, after Rob's driver, only turned on the clock and pulsed the reset.
+
+- **At load**, if the GPU isn't already running, V3DRender asks the firmware for domain 10 on: GET_DOMAIN_STATE (&30030), then SET_DOMAIN_STATE (&38030) if it is off.
+- **`*V3DPower`** shows the firmware's domain state and PM_GRAFX with its bits named.
+- **`*V3DPower cycle`** works only while nothing uses the GPU. The firmware turns the domain off and on, then V3DRender turns the clock on and resets the GPU (gates, MMU, interrupts).
+- **Replay (kit 8)** runs the job set, then `*V3DPower cycle`, then the set again.
+- **Tests:** the emulator test answers the domain tags, and checks the domain request at load, `*V3DPower` and `*V3DPower cycle`.
+
 ## 0.07 and kit 7: is it the Z buffer's memory? (15 November 2026)
 
 Kit 6's replay on the Pi: Mesa's first job finished at once **without

@@ -30,7 +30,7 @@
 #include "v3d_regs.h"
 #include "plat_pi4.h"
 
-#define VERSION 7			/* 0.07 */
+#define VERSION 8			/* 0.08 */
 #define SWI_BASE 0xC3D40
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -424,6 +424,14 @@ show_hang (const char *what, const struct v3d_hang *h)
     }
 }
 
+static const char *
+skip0 (const char *s)
+{
+  while (*s)
+    s++;
+  return s + 1;
+}
+
 static uint32_t
 parse_dec (const char *s)
 {
@@ -453,6 +461,47 @@ mod_command (int index, const char *tail, int argc)
 	}
       regs r = {{ 10, (unsigned) tail, 0xFFD, 0, (unsigned) d, (unsigned) d + bytes }};
       return swix_regs (OS_File, &r);
+    }
+  if (index == 3)
+    {
+      /* *V3DPower [cycle] (0.08) */
+      if (argc > 0)
+	{
+	  int open = 0;
+	  for (int i = 0; i < V3D_MAX_FILES; i++)
+	    open += dev->files[i].used;
+	  if (open || !v3d_idle (dev))
+	    {
+	      write0 ("The GPU is in use: close the programs using it first.");
+	      newline ();
+	      return 0;
+	    }
+	  oserror *e = pi4_power_cycle ();
+	  if (e)
+	    return e;
+	  v3d_gpu_reset_now (dev);		/* the reset, gates, MMU and interrupts */
+	  write0 ("The V3D's power domain was turned off and on again.");
+	  newline ();
+	}
+      uint32_t dom, g = pi4_pm_grafx ();
+      oserror *e = pi4_domain (&dom);
+      write0 ("Firmware V3D power domain: ");
+      write0 (e ? e->errmess : dom == 1 ? "on" : dom == 0 ? "off" : "not known to the firmware");
+      newline ();
+      hex ("PM_GRAFX ", g);
+      static const char names[] = "POWUP\0POWOK\0ISPOW\0MEMREP\0MRDONE\0ISFUNC\0RSTN\0";
+      const char *n = names;
+      write0 (":");
+      for (int b = 0; b < 7; b++, n = skip0 (n))
+	if (g & (1u << b))
+	  {
+	    write0 (" ");
+	    write0 (n);
+	  }
+      if (g & (1u << 12))
+	write0 (" ENAB");
+      newline ();
+      return 0;
     }
   if (index == 1)
     {

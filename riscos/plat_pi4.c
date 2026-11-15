@@ -110,6 +110,9 @@ mailbox (uint32_t tag, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t *out0, ui
 #define TAG_SET_CLOCK_RATE	0x00038002u
 #define TAG_GET_MAX_CLOCK_RATE	0x00030004u
 #define CLOCK_V3D		5u
+#define TAG_GET_DOMAIN_STATE	0x00030030u	/* Linux's raspberrypi-power */
+#define TAG_SET_DOMAIN_STATE	0x00038030u
+#define DOMAIN_V3D		10u		/* RPI_POWER_DOMAIN_V3D */
 
 /* the board's processor (new-style revision codes): 3 = BCM2711 */
 int
@@ -239,6 +242,55 @@ pi4_map (void)
   return 0;
 }
 
+/* The firmware's V3D power domain (0.08), as Linux's raspberrypi-power
+   driver asks for it before the v3d driver probes: *state = 1 on, 0 off,
+   ~0 if the firmware doesn't know the domain. */
+oserror *
+pi4_domain (uint32_t *state)
+{
+  uint32_t echo;
+  *state = ~0u;
+  return mailbox (TAG_GET_DOMAIN_STATE, DOMAIN_V3D, ~0u, 0, &echo, state);
+}
+
+oserror *
+pi4_set_domain (uint32_t on)
+{
+  uint32_t echo, state;
+  return mailbox (TAG_SET_DOMAIN_STATE, DOMAIN_V3D, on, 0, &echo, &state);
+}
+
+uint32_t
+pi4_pm_grafx (void)
+{
+  return pi4.pm[PM_GRAFX / 4];
+}
+
+/* The firmware turns the V3D's power domain off and on again (0.08),
+   then the clock, the reset and the gates as at load. Idle only. */
+oserror *
+pi4_power_cycle (void)
+{
+  oserror *e = stop_bridge ();
+  if (e)
+    return e;
+  e = pi4_set_domain (0);
+  if (!e)
+    {
+      spin (1000000);
+      e = pi4_set_domain (1);
+    }
+  if (e)
+    return e;
+  uint32_t echo, state, rate;
+  e = mailbox (TAG_SET_CLOCK_STATE, CLOCK_V3D, 1, 0, &echo, &state);
+  if (!e)
+    e = mailbox (TAG_GET_CLOCK_RATE, CLOCK_V3D, 0, 0, &echo, &rate);
+  if (!e && !rate)
+    e = pi4_set_clock (0, &rate);
+  return e;
+}
+
 /* Power the V3D up, unless it is up already (a reload: never reset it). */
 oserror *
 pi4_power_on (int *was_up)
@@ -246,6 +298,11 @@ pi4_power_on (int *was_up)
   *was_up = pi4_v3d_is_up ();
   if (*was_up)
     return 0;
+  /* the firmware's power domain first, as Linux has it before probing
+     (0.08); a firmware without the domain interface answers ~0 */
+  uint32_t dom;
+  if (!pi4_domain (&dom) && dom == 0)
+    pi4_set_domain (1);
   /* the firmware's clock first: a gated V3D takes register writes but
      its control lists never run */
   uint32_t echo, state, rate;
