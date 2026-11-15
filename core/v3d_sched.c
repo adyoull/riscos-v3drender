@@ -208,6 +208,38 @@ v3d_gpu_reset_now (struct v3d_dev *v3d)
   plat_irq_restore (s);
 }
 
+/* (0.10) Recovery: every queued job is ended unrun and every running one
+   by a GPU reset, so that whatever programs left behind (a job that never
+   ends, work queued behind it) is gone. Their fences are signalled, as
+   failed. Interrupts on. */
+void
+v3d_cancel_all (struct v3d_dev *v3d)
+{
+  struct v3d_job *queued[V3D_NQ];
+  unsigned s = plat_irq_off ();
+  for (int q = 0; q < V3D_NQ; q++)
+    {
+      queued[q] = v3d->head[q];
+      v3d->head[q] = v3d->tail[q] = 0;
+    }
+  plat_irq_restore (s);
+  v3d->reset_asked = 1;
+  v3d_gpu_reset_now (v3d);		/* ends the running jobs */
+  v3d->reset_asked = 0;
+  s = plat_irq_off ();
+  for (int q = 0; q < V3D_NQ; q++)
+    while (queued[q])
+      {
+	struct v3d_job *job = queued[q];
+	queued[q] = job->next;
+	job->next = 0;
+	job->failed = 1;
+	retire (v3d, job);			/* in order: after the running one */
+      }
+  plat_irq_restore (s);
+  v3d_service (v3d);			/* lets go of their buffers */
+}
+
 /* With interrupts on, at each call into the driver. */
 void
 v3d_service (struct v3d_dev *v3d)
@@ -247,10 +279,11 @@ v3d_service (struct v3d_dev *v3d)
 	  if (!job)
 	    continue;
 	  if (!job->start_cs)
-	    job->start_cs = now | 1;
+	    job->start_cs = job->first_cs = now | 1;
 	  else if (now - job->start_cs >= V3D_TIMEOUT_CS)
 	    {
-	      if (v3d_job_progressing (v3d, job))
+	      if (v3d_job_progressing (v3d, job)
+		  && now - job->first_cs < V3D_HARD_TIMEOUT_CS)
 		job->start_cs = now | 1;	/* skip the reset; re-arm */
 	      else
 		{

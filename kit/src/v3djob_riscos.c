@@ -64,6 +64,12 @@ sys_pte (uint32_t gpu)
 }
 
 int
+sys_reset (int all)
+{
+  return _swix (0xC3D44, _IN (0), all) ? -1 : 0;
+}
+
+int
 sys_pa_width (void)
 {
   unsigned va = 0, pa = 0;

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.10: recovering after a failed run (15 November 2026)
+
+The owner found V3DRender stuck after a failed run, and asked for a way to reset the GPU and recover.
+
+- **`*V3DReset [all]`** (and `V3DRender_Reset`, with r0 bit 0 = all):
+  - Every job waiting in a queue is ended unrun.
+  - Every running job is ended by a GPU reset.
+  - Their fences are signalled as failed, so waiting programs carry on, and their buffers are let go.
+  - `all` also closes every V3DRender file, with its buffers and sync objects. It is meant for command-line programs that stop without closing (Alt-Break, an error); Wimp tasks are already closed on Service_WimpCloseDown.
+  - Before 0.10, `V3DRender_Reset` reset the GPU but left queued jobs, and nothing closed a file whose program had gone.
+- **A hard limit:** a job is reset after 5 s on the GPU even if its list keeps moving. Like Linux, the 0.5 s hang check skips the reset while CA/RA change, so a looping list would otherwise run for ever.
+- **The log** says "Resetting GPU on request" for a reset that was asked for.
+- **Tests:**
+  - The simulated GPU checks the hard limit, `v3d_cancel_all` with a hung job and two queued behind it (all fences done, the BO freed after GEM_CLOSE), the same with nothing to do, and that the GPU works afterwards (1929 checks).
+  - The emulator test checks `*V3DReset`, `*V3DReset all` closing a file left open, and `V3DRender_Reset` r0 = 1.
+  - V3DJob's hang run (HangTest) adds test 10: a job that never ends and a frame queued behind it, ended at once by V3DRender_Reset; the queued frame isn't run, and the next frame is right.
+
 ## Documentation (15 November 2026)
 
 - docs/INTERFACE.md now states the owner's rule: programs use V3DRender only through RISC3D (`RISC3D_Info`, `RISC3D_Open`, and the ioctl SWI that RISC3D names). The direct SWIs are for V3DRender's own tools and kits, and for RISC3D.

@@ -95,7 +95,17 @@ structures and the libdrm layer.
 | `V3DRender_Reset` (&C3D44) | | |
 
 `*V3DRender` shows the GPU and what it has done; `*V3DClock [MHz]`;
-`*V3DPower [cycle]`; `*V3DDump <file>`. `V3DRender_Debug` (&C3D45) reads
+`*V3DPower [cycle]`; `*V3DDump <file>`.
+
+**If something goes wrong (0.10):** `*V3DReset` ends every GPU job, running or
+waiting, and resets the GPU. Programs waiting for those jobs are told they
+failed, and the GPU is ready for the next program. `*V3DReset all` also
+closes every V3DRender file, with its buffers. Use it when programs stopped
+without closing theirs, for example after Alt-Break or an error in a
+command-line program; a program still using the GPU must start again.
+`V3DRender_Reset` does the same (r0 bit 0 = all). On its own, V3DRender
+resets the GPU when a job makes no progress for half a second (as Linux),
+and since 0.10 also when one has run for 5 seconds, even if it still moves. `V3DRender_Debug` (&C3D45) reads
 the GPU's page table (r0 = 0, r1 = GPU address) and the MMU's widths
 (r0 = 1).
 

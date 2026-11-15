@@ -495,6 +495,51 @@ test_old_struct_csd_reset (void)
   sim_finish (V3D_RENDER);
   CHECK (syncobj_done (f, aout));
 
+  /* (0.10) a job that keeps moving for ever is reset after 5 s */
+  uint32_t lout = syncobj (f, 0);
+  s.out_sync = lout;
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &s) == 0);
+  int r0 = resets;
+  v3d_service (dev);				/* notes the start */
+  for (int i = 0; i < 60 && resets == r0; i++)
+    {
+      now_cs += 10;
+      regs[V3D_BANK_CORE0][V3D_CLE_CTNCA (1) / 4] += 8;	/* always moving */
+      v3d_service (dev);
+    }
+  CHECK (resets == r0 + 1);
+  CHECK (syncobj_done (f, lout));
+
+  /* (0.10) recovery: a hung job with others queued behind it, all ended */
+  uint32_t c1 = syncobj (f, 0), c2 = syncobj (f, 0), c3 = syncobj (f, 0);
+  uint32_t cb = bo_new (f, 65536, 0);
+  int cbo = dev->files[f].handles[cb];
+  struct drm_v3d_submit_cl k1 = { .rcl_start = 0x10, .rcl_end = 0x20, .out_sync = c1,
+				  .bo_handles = (uintptr_t) &cb, .bo_handle_count = 1 };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &k1) == 0);
+  k1.out_sync = c2;
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &k1) == 0);
+  k1.out_sync = c3;
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &k1) == 0);
+  CHECK (busy[V3D_RENDER] && !syncobj_done (f, c1) && !syncobj_done (f, c3));
+  struct drm_gem_close gc = { .handle = cb };
+  CHECK (ioctl_ (f, DRM_IOCTL_GEM_CLOSE, &gc) == 0);
+  CHECK (dev->bos[cbo].refs > 0);		/* the jobs still hold it */
+  r0 = resets;
+  v3d_cancel_all (dev);
+  CHECK (resets == r0 + 1);
+  CHECK (syncobj_done (f, c1) && syncobj_done (f, c2) && syncobj_done (f, c3));
+  CHECK (!busy[V3D_RENDER] && !dev->head[V3D_RENDER] && !dev->active[V3D_RENDER]);
+  CHECK (dev->bos[cbo].refs == 0);		/* and let it go */
+  v3d_cancel_all (dev);				/* with nothing to do */
+  CHECK (resets == r0 + 2);
+  /* and it still works */
+  uint32_t c4 = syncobj (f, 0);
+  s.out_sync = c4;
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &s) == 0);
+  sim_finish (V3D_RENDER);
+  CHECK (syncobj_done (f, c4));
+
   /* a client that goes away with its jobs still running */
   int g = v3d_open (dev, 2);
   uint32_t gb = bo_new (g, 65536, 0);

@@ -282,8 +282,8 @@ v3d_dump_hang (struct v3d_dev *v3d, struct v3d_job *job)
 void
 v3d_reset (struct v3d_dev *v3d)
 {
-  plat_log (v3d, "Resetting GPU for hang. V3D_ERR_STAT:",
-	    V3D_CORE_READ (0, V3D_ERR_STAT));
+  plat_log (v3d, v3d->reset_asked ? "Resetting GPU on request. V3D_ERR_STAT:"
+	    : "Resetting GPU for hang. V3D_ERR_STAT:", V3D_CORE_READ (0, V3D_ERR_STAT));
   v3d_irq_disable (v3d);
   if (v3d->ver >= V3D_GEN_71)
     {

@@ -30,7 +30,7 @@
 #include "v3d_regs.h"
 #include "plat_pi4.h"
 
-#define VERSION 9			/* 0.09 */
+#define VERSION 10		/* 0.10 */
 #define SWI_BASE 0xC3D40
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -141,6 +141,40 @@ file_close (int f)
     }
 }
 
+/* (0.10) Recovery after a program failed: the GPU reset, every queued
+   and running job ended (their fences signalled as failed), and with
+   all, every file closed with its buffers and sync objects. */
+static oserror *
+recover (int all, int report)
+{
+  v3d_cancel_all (dev);
+  int closed = 0;
+  if (all)
+    for (int f = 0; f < V3D_MAX_FILES; f++)
+      if (dev->files[f].used)
+	{
+	  file_close (f);
+	  closed++;
+	}
+  if (report)
+    {
+      write0 ("The GPU was reset and its work ended.");
+      if (all)
+	{
+	  write0 (" Files closed: ");
+	  char n[12];
+	  int i = 11;
+	  n[i] = 0;
+	  do
+	    n[--i] = (char) ('0' + closed % 10);
+	  while ((closed /= 10) && i);
+	  write0 (n + i);
+	}
+      newline ();
+    }
+  return 0;
+}
+
 /* RISC3D's calls: r0 = 0 open -> r0 = our file; 1 close r1 = file;
    2 sync: not for this kind of driver; 3 describe (RISC3D 0.03, asked
    only of drivers registered with flags bit 1): r0 = 0, on a GPU */
@@ -209,8 +243,9 @@ mod_swi (unsigned number, regs *r)
       r->r[0] = (unsigned) v3d_ioctl (dev, f, r->r[1], (void *) r->r[2]);
       return 0;
     case 4:
-      v3d_gpu_reset_now (dev);
-      return 0;
+      /* V3DRender_Reset (0.10): every job ended and the GPU reset;
+	 r0 bit 0 set: every file closed too (what *V3DReset all does) */
+      return recover ((r->r[0] & 1) != 0, 0);
     case 5:
       /* V3DRender_Debug (0.07): r0 = 0: r1 = GPU address -> r0 = its PTE
 	 (0: none); r0 = 1: -> r0 = VA width, r1 = PA width (bits) */
@@ -499,6 +534,12 @@ mod_command (int index, const char *tail, int argc)
 	}
       regs r = {{ 10, (unsigned) tail, 0xFFD, 0, (unsigned) d, (unsigned) d + bytes }};
       return swix_regs (OS_File, &r);
+    }
+  if (index == 4)
+    {
+      /* *V3DReset [all] (0.10) */
+      int all = argc > 0 && (tail[0] | 32) == 'a';
+      return recover (all, 1);
     }
   if (index == 3)
     {

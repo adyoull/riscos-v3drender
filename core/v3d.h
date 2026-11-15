@@ -67,6 +67,10 @@ enum v3d_bank { V3D_BANK_HUB, V3D_BANK_CORE0, V3D_BANK_SMS, V3D_BANK_BRIDGE, V3D
 #define V3D_OVERFLOW_POOL 16
 #define V3D_JOB_OVERFLOWS 8
 #define V3D_TIMEOUT_CS 50		/* as Linux's 500 ms */
+/* (0.10) Linux lets a job that keeps moving (its list address changes)
+   run for ever; a list or shader that loops would never be reset. A job
+   on the GPU this long is reset whatever it is doing. */
+#define V3D_HARD_TIMEOUT_CS 500
 
 struct v3d_fence { uint32_t q, seq; };	/* seq 0: no wait */
 
@@ -78,6 +82,7 @@ struct v3d_job
   uint32_t seq;
   uint32_t dep[V3D_NQ];			/* fences that must be done first */
   uint32_t start_cs, timedout_ctca, timedout_ctra;
+  uint32_t first_cs;			/* when the hang check first saw it (0.10) */
   int file;
   union
   {
@@ -174,6 +179,7 @@ struct v3d_dev
 
   struct v3d_stats stats;
   int dumped;				/* the first hang's dump is taken */
+  int reset_asked;			/* v3d_cancel_all's reset (0.10): for the log */
 };
 
 /* Errors are Linux's errno values, negated. */
@@ -205,6 +211,7 @@ void v3d_irq_disable (struct v3d_dev *v3d);
 int v3d_irq (struct v3d_dev *v3d);	/* the interrupt: 1 if it was ours */
 void v3d_reset (struct v3d_dev *v3d);
 void v3d_record_hang (struct v3d_dev *v3d, struct v3d_job *job);
+void v3d_cancel_all (struct v3d_dev *v3d);	/* (0.10) every job ended, the GPU reset */
 void v3d_dump_hang (struct v3d_dev *v3d, struct v3d_job *job);
 
 /* The dump of the first hung job (0.06), what *V3DDump saves: words.

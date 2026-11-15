@@ -344,7 +344,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 9 and out[8] != 0, "version 0.09, statistics in r8")
+    check(out[0] == 10 and out[8] != 0, "version 0.10, statistics in r8")
     stats_addr = out[8]
 
     # RISC3D: registered as a DRM device; its calls open, describe, close
@@ -472,6 +472,23 @@ def main():
 
     out, e = mod.swi(2, {0: f})
     check(e is None, "V3DRender_Close")
+    # (0.10) *V3DReset: the GPU reset; "all": every file closed
+    out, e = mod.swi(1, {0: 0})
+    check(e is None, "a file left open by a program that stopped")
+    m.output = ""
+    err = mod.command("V3DReset")
+    check(err is None and "reset" in m.output and "Files closed" not in m.output,
+          "*V3DReset: %s" % m.output.strip())
+    out, e = mod.swi(0)
+    check(out[6] == 1, "the file is still open")
+    m.output = ""
+    err = mod.command("V3DReset", "all", 1)
+    check(err is None and "Files closed: 1" in m.output, "*V3DReset all: %s" % m.output.strip())
+    out, e = mod.swi(0)
+    check(out[6] == 0, "no files open after *V3DReset all")
+    out, e = mod.swi(4, {0: 1})
+    check(e is None, "V3DRender_Reset with r0 = 1")
+
     m.output = ""
     err = mod.command("V3DPower", "cycle", 1)
     check(err is None and "off and on again" in m.output and m.domain_sets[-2:] == [0, 1],

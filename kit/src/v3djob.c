@@ -957,6 +957,31 @@ main (int argc, char **argv)
       check (r == 0 && wait_sync (200) == 0, "the GPU works after the reset");
       check (frame_check (&f, 0x80402010, 0xDEADBEEF), "every pixel right");
       frame_free (&f);
+
+      printf ("\n10. Recovering at once: V3DRender_Reset (*V3DReset)\n");
+      struct frame h, q;
+      if (frame_new (&h, 128, 128, 1) || frame_new (&q, 128, 128, 0))
+	return 1;
+      fill (&q, 0xDEADBEEF);
+      check (frame_submit (&h, 0) == 0, "a job that never ends");
+      check (frame_submit (&q, 0x10203040) == 0, "and a frame queued behind it");
+      t0 = now_cs ();
+      check (sys_reset (0) == 0, "V3DRender_Reset");
+      r = wait_sync (100);
+      char what[80];
+      snprintf (what, sizeof what, "both ended at once (%u cs), not after the hang check",
+		now_cs () - t0);
+      check (r == 0 && now_cs () - t0 < 30, what);
+      check (frame_check (&q, 0xDEADBEEF, 0xDEADBEEF), "the queued frame wasn't run");
+      frame_free (&h);
+      frame_free (&q);
+      if (frame_new (&f, 128, 128, 0))
+	return 1;
+      fill (&f, 0xDEADBEEF);
+      r = frame_submit (&f, 0x55667788);
+      check (r == 0 && wait_sync (200) == 0, "the GPU works afterwards");
+      check (frame_check (&f, 0x55667788, 0xDEADBEEF), "every pixel right");
+      frame_free (&f);
     }
 
   struct drm_syncobj_destroy sd = { sync, 0 };

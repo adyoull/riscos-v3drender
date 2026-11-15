@@ -15,6 +15,7 @@ void sys_status (const char *also_to);
 const uint32_t *sys_stats (void);	/* V3DRender_Info r8 */
 uint32_t sys_pte (uint32_t gpu);	/* V3DRender_Debug 0 (0.07): 0 if none */
 int sys_pa_width (void);		/* V3DRender_Debug 1; 0 if older */
+int sys_reset (int all);		/* V3DRender_Reset (0.10: ends every job) */
 const char *sys_risc3d_info (const char **name, unsigned *flags, unsigned *ioctl_swi,
 			     const char **drm);
 const char *sys_risc3d_open (int *context, int *file);
