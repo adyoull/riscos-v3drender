@@ -48,6 +48,13 @@ else
   echo "(unicorn isn't installed: the module's emulator test was skipped)"
 fi
 
+# the compute test's GPU program, assembled with Mesa's QPU packer (must
+# match the copy in kit/src)
+gcc -D_GNU_SOURCE -std=gnu11 -Itools/qpu/mesa -o out/mkcsd tools/qpu/mkcsd.c \
+  tools/qpu/mesa/qpu_instr.c tools/qpu/mesa/qpu_pack.c tools/qpu/mesa/qpu_disasm.c
+out/mkcsd out/csd_prog.h > /dev/null
+cmp out/csd_prog.h kit/src/csd_prog.h
+
 # the kit's first GPU jobs: the control lists checked against Mesa's
 # packet definitions, then V3DJob run against the core with a GPU that
 # carries out its frames, then built for RISC OS
@@ -68,6 +75,6 @@ ${T}strip out/obj/v3djob.elf
 # the Pi test kit
 cp "out/V3DRender,ffa" out/obj/
 python3 tools/mkkit.py out/V3DRenderTest.zip V3DRenderTest kit/ReadMe,fff kit/Check,feb \
-  kit/HangTest,feb kit/V3DCheck,fd1 "out/obj/V3DJob,ff8" "out/obj/V3DRender,ffa"
+  kit/HangTest,feb kit/V3DCheck,fd1 "out/obj/V3DJob,ff8" "out/obj/V3DRender,ffa" "kit/RISC3D,ffa"
 ls -la "out/V3DRender,ffa" out/V3DRenderTest.zip
 # (delivered kits are numbered: V3DRenderTest-2.zip was 0.02's)

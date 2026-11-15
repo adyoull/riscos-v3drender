@@ -110,6 +110,8 @@ struct v3d_file
   struct v3d_syncobj *syncobjs;		/* handle (from 1) */
 };
 
+/* (V3DRender_Info r8 points at this: its layout is part of the
+   interface for tests; add to the end only) */
 struct v3d_stats
 {
   uint32_t jobs[V3D_NQ], irqs, irqs_empty, overflows, overflow_misses;

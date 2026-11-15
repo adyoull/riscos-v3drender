@@ -1,5 +1,5 @@
 | HangTest: gives the GPU a job that never ends, to check that V3DRender
-| notices (after half a second), resets the GPU, and carries on. Run it
-| after Check has passed. Adds to Results.
-RMEnsure V3DRender 0.02 Error Run Check first
+| notices, resets the GPU, and carries on. Run it after Check. Adds to
+| Results.
+RMEnsure V3DRender 0.04 Error Run Check first
 Run <Obey$Dir>.V3DJob hang -o <Obey$Dir>.Results

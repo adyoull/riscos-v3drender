@@ -6,9 +6,11 @@ runs in the program and sends its work to V3DRender, as it sends it to
 Linux's v3d driver through a DRM device. RISC3D lists V3DRender as the
 machine's 3D driver.
 
-**Version 0.02, 12 November 2026.** 0.01 passed its first test on a
-Pi 4 (loading, power-up, buffers, reload); 0.02 brings the GPU's first
-jobs (`V3DRenderTest-2.zip`), not yet run on the Pi. The SWI chunk (&C3D40) and error block (&81D340) are
+**Version 0.04, 15 November 2026.** On the owner's Pi 4, kit 1 (0.01: loading,
+power-up, buffers, reload) and kit 2 (0.02: cleared frames through the
+queues, the GPU's MMU and its interrupt, 1080p at 555 frames a second,
+the reset after a hang) passed. Kit 3 (0.04: TFU, compute, binner
+overflow, RISC3D) is next. The SWI chunk (&C3D40) and error block (&81D340) are
 provisional.
 
 ## How it fits
@@ -86,7 +88,7 @@ structures and the libdrm layer.
 
 | SWI | In | Out |
 |---|---|---|
-| `V3DRender_Info` (&C3D40) | | r0 = version * 100, r1 = V3D version (42), r2 = HUB_IDENT1, r3 = clock (Hz), r4 = buffer memory, r5 = in use, r6 = files open, r7 -> "v3d" |
+| `V3DRender_Info` (&C3D40) | | r0 = version * 100, r1 = V3D version (42), r2 = HUB_IDENT1, r3 = clock (Hz), r4 = buffer memory, r5 = in use, r6 = files open, r7 -> "v3d", r8 -> statistics |
 | `V3DRender_Open` (&C3D41) | r0 = flags (0) | r0 = file |
 | `V3DRender_Close` (&C3D42) | r0 = file | |
 | `V3DRender_Ioctl` (&C3D43) | r0 = file, r1 = request (Linux's number), r2 -> structure | r0 = 0 or -errno |

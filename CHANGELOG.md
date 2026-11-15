@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.04: kit 3, the rest of the GPU's job types (15 November 2026)
+
+Kit 2 passed on the owner's Pi 4 (0.02): cleared frames through the
+queues, the GPU's MMU and its interrupt, 1080p at 555 frames a second,
+404 interrupts for 404 jobs, and the reset after a hung job.
+
+- RISC3D's describe call (reason 3, RISC3D 0.03) is answered "on a GPU"
+  (r0 = 0). RISC3D only asks drivers registered with flags bit 1, which
+  V3DRender isn't, so this is for safety.
+- `V3DRender_Info` r8 points to the statistics (`struct v3d_stats`,
+  read only), so test programs can check the counters.
+- Kit 3 (`V3DRenderTest-3.zip`), V3DJob tests 4-7:
+  - TFU: a raster image converted into lineartile, UIF and UIF with XOR,
+    as Mesa's v3dX(tfu) sets the job up, every pixel checked against
+    Mesa's tiling functions (`kit/src/tiling.h`).
+  - Compute: one workgroup of 16 runs a program made with Mesa's own QPU
+    packer (`tools/qpu`, `kit/src/csd_prog.h`) that stores a value from
+    its uniforms at an address from its uniforms.
+  - Binner overflow: a 1080p frame given 8 KB of binner memory.
+  - Through RISC3D: RISC3D 0.03 lists V3DRender as a DRM device, and a
+    frame drawn on the file from RISC3D_Open is right.
+- Tests on the build machine: Mesa's 45 disassembler test vectors pass
+  through the copy of its packer used here. The emulator test calls the
+  module's RISC3D entry (open, describe, sync refused, close) and reads
+  the statistics block. V3DJob's new tests run against the core with a
+  simulated GPU that carries out TFU, compute and overflow.
+
 ## 0.03: the reset counters current Mesa asks for (13 November 2026)
 
 - GET_PARAM answers `DRM_V3D_PARAM_GLOBAL_RESET_COUNTER` (every reset)

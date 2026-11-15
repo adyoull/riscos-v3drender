@@ -69,9 +69,22 @@ Material from other projects
    follows Mesa's v3dx_rcl.c and v3dx_draw.c (MIT licence, Copyright (C)
    2017 Broadcom) for the packets a frame that only clears needs.
 
-5. common/ (the C module framework) and test/riscos/emu.py: MIT licence,
+5. Mesa's QPU instruction packer and disassembler (src/broadcom/qpu,
+   MIT licence, Copyright (C) 2016-2017 Broadcom): tools/qpu/mesa/ is
+   qpu_instr.c/h, qpu_pack.c and qpu_disasm.c/h unchanged, with
+   v3d_device_info.h and v3d_limits.h, and small stand-ins for the parts
+   of Mesa's util/ they include. tools/qpu/mkcsd.c uses them to make
+   kit/src/csd_prog.h. kit/src/tiling.h is Mesa's
+   broadcom/common/v3d_tiling.c's pixel-offset functions (MIT, Copyright
+   (C) 2014-2017 Broadcom), for 4-byte pixels.
+
+6. kit/RISC3D,ffa: RISC3D's module 0.03 (MIT licence, Copyright (c) 2026
+   Andrew Youll), built unchanged from RISC3D's repository (762a716) for
+   the test kit.
+
+7. common/ (the C module framework) and test/riscos/emu.py: MIT licence,
    Copyright (c) 2026 Andrew Youll.
 
-6. RISC OS Open's Programmer's Reference Manual was used for the SWIs
+8. RISC OS Open's Programmer's Reference Manual was used for the SWIs
    (OS_DynamicArea, OS_Memory, OS_ClaimDeviceVector, BCMSupport); nothing
    from it is reproduced.

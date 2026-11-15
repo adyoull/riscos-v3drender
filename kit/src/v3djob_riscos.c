@@ -50,6 +50,44 @@ now_cs (void)
   return t;
 }
 
+#define RISC3D_Info  0xC3D00
+#define RISC3D_Open  0xC3D02
+#define RISC3D_Close 0xC3D03
+
+const uint32_t *
+sys_stats (void)
+{
+  static const uint32_t none[32];
+  const uint32_t *p = none;
+  if (_swix (V3DRender_Info, _OUT (8), &p) || !p)
+    return none;
+  return p;
+}
+
+const char *
+sys_risc3d_info (const char **name, unsigned *flags, unsigned *ioctl_swi, const char **drm)
+{
+  unsigned version;
+  _kernel_oserror *e = _swix (RISC3D_Info, _OUT (0) | _OUT (3) | _OUT (4) | _OUT (5) | _OUT (6),
+			      &version, name, flags, ioctl_swi, drm);
+  if (!e && version < 2)
+    return "it is older than 0.02";
+  return e ? e->errmess : 0;
+}
+
+const char *
+sys_risc3d_open (int *context, int *file)
+{
+  _kernel_oserror *e = _swix (RISC3D_Open, _IN (0) | _OUT (0) | _OUT (1), 0, context, file);
+  return e ? e->errmess : 0;
+}
+
+void
+sys_risc3d_close (int context)
+{
+  _swix (RISC3D_Close, _IN (0), context);
+}
+
 void
 sys_status (const char *also_to)
 {

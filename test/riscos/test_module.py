@@ -67,6 +67,7 @@ class Pi4(Machine):
         self.vector = None
         self.mailbox = []
         self.time = 1000
+        self.risc3d = None
 
     # -- the GPU
     def _v3d_read(self, uc, off, size, ud):
@@ -209,6 +210,14 @@ class Pi4(Machine):
             check(self.vector == (r[1], r[2]), "the same vector is released")
             self.vector = None
             return
+        if base == 0xC3D01:                       # RISC3D_Register (a stand-in RISC3D)
+            if r[0] == 0:
+                self.risc3d = dict(entry=r[1], r12=r[2], name=self.cstr(r[3]),
+                                   flags=r[4], ioctl=r[5], drm=self.cstr(r[6]))
+            else:
+                check(self.risc3d and self.risc3d["entry"] == r[1], "deregisters what it registered")
+                self.risc3d = None
+            return
         if base in (0xD4, 0xD8):                  # OS_ConvertHex8 / Cardinal4
             s = ("%08X" % r[0]) if base == 0xD4 else str(r[0])
             uc.mem_write(r[1], s.encode() + b"\0")
@@ -303,6 +312,23 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
+    check(out[0] == 4 and out[8] != 0, "version 0.04, statistics in r8")
+    stats_addr = out[8]
+
+    # RISC3D: registered as a DRM device; its calls open, describe, close
+    d = m.risc3d
+    check(d is not None and d["flags"] == 1 and d["ioctl"] == 0xC3D43 and d["drm"] == "v3d",
+          "registered with RISC3D as a DRM device (%s)" % d)
+    if d:
+        o, v, _ = m.call(d["entry"], {0: 0, 12: d["r12"]})
+        check(not v and o[0] >= 1 and o[1] == 0 and o[2] == 0, "RISC3D open -> a file")
+        rf = o[0]
+        o, v, _ = m.call(d["entry"], {0: 3, 12: d["r12"]})
+        check(not v and o[0] == 0, "RISC3D describe -> 0, on a GPU")
+        o, v, _ = m.call(d["entry"], {0: 2, 1: rf, 12: d["r12"]})
+        check(v, "RISC3D sync refused (no command stream)")
+        o, v, _ = m.call(d["entry"], {0: 1, 1: rf, 12: d["r12"]})
+        check(not v, "RISC3D close")
     out, e = mod.swi(1, {0: 0})
     check(e is None and out[0] == 1, "V3DRender_Open -> file 1")
     f = out[0]
@@ -366,6 +392,8 @@ def main():
     m.output = ""
     err = mod.command("V3DRender")
     check(err is None and "Render jobs:           1" in m.output, "*V3DRender")
+    check(m.word(stats_addr + 4 * 1) == 1 and m.word(stats_addr + 4 * 5) == 2,
+          "the statistics block: 1 render job, 2 interrupts")
     print("  " + m.output.replace("\n", "\n  ").rstrip())
 
     out, e = mod.swi(2, {0: f})
@@ -373,6 +401,7 @@ def main():
     err = mod.finalise()
     check(err is None, "finalises: %s" % err)
     check(m.vector is None, "the device vector is released")
+    check(m.risc3d is None, "deregistered from RISC3D")
     check(not m.areas, "both areas removed")
     check(m.hub.get(R["MMU_CTL"]) == 0, "the MMU left off")
     print("  most SVC stack used: %d bytes" % m.stack_used())

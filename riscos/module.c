@@ -4,7 +4,9 @@
      V3DRender_Info   -> r0 = version * 100, r1 = V3D version (42),
 			 r2 = HUB_IDENT1, r3 = clock (Hz), r4 = buffer
 			 memory (bytes), r5 = of which in use, r6 = files
-			 open, r7 -> the DRM driver's name ("v3d")
+			 open, r7 -> the DRM driver's name ("v3d"),
+			 r8 -> the statistics (struct v3d_stats in
+			 core/v3d.h: words, read only, for tests)
      V3DRender_Open   r0 = flags (0) -> r0 = file (from 1)
      V3DRender_Close  r0 = file
      V3DRender_Ioctl  r0 = file, r1 = request, r2 -> its structure
@@ -28,7 +30,7 @@
 #include "v3d_regs.h"
 #include "plat_pi4.h"
 
-#define VERSION 3			/* 0.03 */
+#define VERSION 4			/* 0.04 */
 #define SWI_BASE 0xC3D40
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -140,7 +142,8 @@ file_close (int f)
 }
 
 /* RISC3D's calls: r0 = 0 open -> r0 = our file; 1 close r1 = file;
-   2 sync: not for this kind of driver */
+   2 sync: not for this kind of driver; 3 describe (RISC3D 0.03, asked
+   only of drivers registered with flags bit 1): r0 = 0, on a GPU */
 oserror *
 driver_call (regs *r)
 {
@@ -159,6 +162,9 @@ driver_call (regs *r)
       }
     case 1:
       file_close ((int) r->r[1] - 1);
+      return 0;
+    case 3:				/* describe (RISC3D 0.03): on a GPU */
+      r->r[0] = 0;
       return 0;
     }
   return ERR (err_sync);
@@ -187,6 +193,7 @@ mod_swi (unsigned number, regs *r)
 	r->r[5] = dev->pages_used * V3D_PAGE;
 	r->r[6] = (unsigned) n;
 	r->r[7] = (unsigned) "v3d";
+	r->r[8] = (unsigned) &dev->stats;	/* read only: struct v3d_stats */
 	return 0;
       }
     case 1:

@@ -14,9 +14,11 @@
 #include "v3d.h"
 #include "v3d_regs.h"
 #include "v3djob.h"
+#include "tiling.h"
+#include "csd_prog.h"
 
 static uint32_t regs[V3D_NBANKS][0x4000 / 4];
-static int busy[V3D_HW_QUEUES], hung;
+static int busy[V3D_HW_QUEUES], hung, oom_pending;
 static uint32_t time_cs = 1000, resets;
 static uint8_t *area;
 static const uint32_t area_pages = 16384;	/* 64 MB */
@@ -72,7 +74,7 @@ render (uint32_t start, uint32_t end)
 	gen = (uint32_t) bits (p + 1, 0, 32), gen_end = (uint32_t) bits (p + 1, 32, 32);
       if (op == 23)
 	tiles++;
-      static const uint8_t len[128] = { [4] = 1, [6] = 1, [8] = 1, [13] = 1, [18] = 1, [19] = 1,
+      static const uint8_t len[128] = { [16] = 5, [4] = 1, [6] = 1, [8] = 1, [13] = 1, [18] = 1, [19] = 1,
 	[20] = 9, [21] = 2, [23] = 3, [25] = 2, [26] = 1, [27] = 1, [29] = 13, [54] = 5,
 	[56] = 2, [92] = 5, [120] = 9, [121] = 9, [122] = 9, [123] = 5, [124] = 4,
 	[125] = 1, [126] = 2 };
@@ -127,8 +129,45 @@ v3d_wr (struct v3d_dev *v, int bank, uint32_t off, uint32_t val)
   regs[bank][off / 4] = val;
   if (bank == V3D_BANK_CORE0 && off == V3D_CLE_CT0QEA)
     {
+      uint8_t *bcl = va (regs[bank][V3D_CLE_CT0QBA / 4]);
       busy[V3D_BIN] = 1;
-      hung = va (regs[bank][V3D_CLE_CT0QBA / 4])[0] == 8;	/* wait on semaphore */
+      hung = bcl[0] == 8;			/* wait on semaphore */
+      /* the binner's memory: 128 bytes a tile to start (Mesa's sizes) */
+      if (bcl[0] == 120)
+	{
+	  uint32_t w = (uint32_t) bits (bcl + 1, 32, 16) + 1, h = (uint32_t) bits (bcl + 1, 48, 16) + 1;
+	  uint32_t need = ((w + 63) / 64) * ((h + 63) / 64) * 128;
+	  oom_pending = regs[bank][V3D_CLE_CT0QMS / 4] < need;
+	}
+    }
+  /* the TFU: raster R32 in, the layout asked for out (by Mesa's tiling) */
+  if (bank == V3D_BANK_HUB && off == (uint32_t) V3D_TFU_ICFG (42))
+    {
+      uint32_t ioa = regs[bank][V3D_TFU_IOA (42) / 4], ios = regs[bank][V3D_TFU_IOS (42) / 4];
+      uint32_t w = ios & 0xffff, h = ios >> 16, fmt = (ioa >> 3) & 7, dst = ioa & ~0xfffu;
+      uint32_t src = regs[bank][V3D_TFU_IIA (42) / 4], stride = regs[bank][V3D_TFU_IIS (42) / 4];
+      if ((val >> 18) & 15 || ((val >> 9) & 127) != 29)
+	printf ("SIM: TFU input isn't raster R32F\n"), exit (2);
+      for (uint32_t y = 0; y < h; y++)
+	for (uint32_t x = 0; x < w; x++)
+	  {
+	    uint32_t o = fmt == 3 ? lt_pixel_offset (x, y) : uif_pixel_offset (h, x, y, fmt == 7);
+	    memcpy (va (dst + o), va (src + (y * stride + x) * 4), 4);
+	  }
+      busy[V3D_TFU] = 1;
+    }
+  /* compute: run csd_prog: store uniform 0 at uniform 1 */
+  if (bank == V3D_BANK_CORE0 && off == (uint32_t) V3D_CSD_QUEUED_CFG0 (42))
+    {
+      uint32_t code = regs[bank][(V3D_CSD_QUEUED_CFG0 (42) + 20) / 4] & ~7u;
+      uint32_t unif = regs[bank][(V3D_CSD_QUEUED_CFG0 (42) + 24) / 4];
+      if (memcmp (va (code), csd_prog, sizeof csd_prog))
+	printf ("SIM: not csd_prog\n"), exit (2);
+      uint32_t value, addr;
+      memcpy (&value, va (unif), 4);
+      memcpy (&addr, va (unif + 4), 4);
+      memcpy (va (addr), &value, 4);
+      busy[V3D_CSD] = 1;
     }
   if (bank == V3D_BANK_CORE0 && off == V3D_CLE_CT1QEA)
     {
@@ -141,12 +180,30 @@ void
 plat_wait (void)
 {
   time_cs++;
-  static const uint32_t bit[2] = { V3D_INT_FLDONE, V3D_INT_FRDONE };
-  for (int q = 0; q < 2; q++)
+  if (busy[V3D_BIN] && oom_pending)
+    {
+      /* out of memory: the interrupt must give the binner more */
+      oom_pending = 0;
+      regs[V3D_BANK_CORE0][V3D_PTB_BPOS / 4] = 0;
+      regs[V3D_BANK_CORE0][V3D_CTL_INT_STS / 4] |= V3D_INT_OUTOMEM;
+      v3d_irq (dev);
+      uint32_t a = regs[V3D_BANK_CORE0][V3D_PTB_BPOA / 4], n = regs[V3D_BANK_CORE0][V3D_PTB_BPOS / 4];
+      if (!n)
+	return;				/* no memory given: the bin job stalls */
+      va (a);
+      va (a + n - 1);			/* (mapped) */
+    }
+  static const uint32_t bit[4] = { V3D_INT_FLDONE, V3D_INT_FRDONE, 0, 0 };
+  for (int q = 0; q < V3D_HW_QUEUES; q++)
     if (busy[q] && !(q == V3D_BIN && hung))
       {
 	busy[q] = 0;
-	regs[V3D_BANK_CORE0][V3D_CTL_INT_STS / 4] |= bit[q];
+	if (q == V3D_TFU)
+	  regs[V3D_BANK_HUB][V3D_HUB_INT_STS / 4] |= V3D_HUB_INT_TFUC;
+	else if (q == V3D_CSD)
+	  regs[V3D_BANK_CORE0][V3D_CTL_INT_STS / 4] |= V3D_INT_CSDDONE (42);
+	else
+	  regs[V3D_BANK_CORE0][V3D_CTL_INT_STS / 4] |= bit[q];
 	v3d_irq (dev);
       }
 }
@@ -195,6 +252,22 @@ sys_ioctl (int file, uint32_t request, void *arg, const char **err)
 }
 
 unsigned now_cs (void) { return time_cs; }
+
+const uint32_t *
+sys_stats (void)
+{
+  return (const uint32_t *) &dev->stats;
+}
+
+const char *
+sys_risc3d_info (const char **name, unsigned *flags, unsigned *ioctl_swi, const char **drm)
+{
+  (void) name; (void) flags; (void) ioctl_swi; (void) drm;
+  return "not on the build machine";
+}
+
+const char *sys_risc3d_open (int *c, int *f) { (void) c; (void) f; return "no"; }
+void sys_risc3d_close (int c) { (void) c; }
 
 void
 sys_status (const char *also_to)

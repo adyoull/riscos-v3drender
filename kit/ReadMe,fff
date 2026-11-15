@@ -1,34 +1,34 @@
-V3DRender 0.02: the GPU's first jobs on a Raspberry Pi 4
-=========================================================
+V3DRender 0.04: kit 3, the rest of the GPU's job types
+======================================================
 
-V3DRender is the new driver for the Pi 4's GPU (V3D 4.2), following
-Linux's v3d driver. The first kit showed that it loads, powers the GPU up
-and manages GPU memory. This one gives the GPU its first work: frames
-that are only cleared to a colour, built as Mesa's v3d driver builds them
-(a bin job and a render job). That tests the GPU's own MMU (page table),
-V3DRender's job queues, the GPU's interrupt and the waits.
+Kit 2 showed that V3DRender drives the Pi 4's GPU: frames cleared through
+its queues, MMU and interrupt, and a reset after a hang. Kit 3 tries
+everything else Mesa will use, before Mesa does:
+
+- the TFU (texture formatting unit), which Mesa uses for mipmaps and
+  copies: a raster image converted into each of the GPU's tiled layouts
+  (lineartile, UIF, UIF with XOR), every pixel checked against where
+  Mesa's own code says it belongs;
+- a compute job (what GLES 3.1 compute shaders become): a tiny program
+  for the GPU's processors, assembled with Mesa's own encoder, that
+  stores a value in memory;
+- the binner running out of memory on a 1080p frame, so that V3DRender's
+  interrupt has to give it more;
+- the GPU reached through RISC3D, as Mesa will reach it (RISC3D 0.03 is
+  in this folder: it is loaded if yours is older or not loaded).
 
 Before you start
-- A Pi 4, Pi 400 or CM4 with RISC OS 5.30 or later.
-- V3DDriver must not be loaded (*RMKill V3DDriver).
-- Copy this folder to a hard disc.
+- A Pi 4, Pi 400 or CM4 with RISC OS 5.30 or later. V3DDriver not
+  loaded. Copy this folder to a hard disc.
 
 The test
-1. Double-click Check. It loads V3DRender 0.02 from this folder (it
-   replaces 0.01 if that is loaded), runs V3DCheck as before, then
-   V3DJob:
-   - a 128x128 frame cleared to one colour, every pixel checked, and the
-     memory either side checked untouched;
-   - a 1920x1080 frame, then 200 more, timed.
-   Both programs write to Results; at the end V3DJob shows *V3DRender
-   (its jobs and interrupts should now count up) and adds that too.
-2. Only if step 1 passed, double-click HangTest. It gives the GPU a job
-   that never ends. V3DRender should notice after half a second, reset
-   the GPU, end the job, and the next frame should be right. *V3DRender
-   then shows Timeouts 1 and Resets 1. This is the first reset on real
-   hardware, so if anything is going to freeze the machine it is this:
-   if it does, restart and say so.
-3. Send Results back (or photos of the screens).
+1. Double-click Check. It loads V3DRender 0.04 (replacing 0.02 or 0.03
+   if loaded) and RISC3D 0.03, then runs V3DCheck and V3DJob. Tests 1-2
+   are kit 2's; 4-7 are new. Both programs write to Results, and
+   *V3DRender's figures are added at the end.
+2. Optional: double-click HangTest again (as in kit 2).
+3. Send Results back.
 
-If step 1 freezes the machine or reports a timeout, restart, and send a
-photo of the screen.
+The compute job is the first program to run on the GPU's own processors
+under V3DRender. If one of the new tests freezes the machine, restart
+and say which number it had reached.
