@@ -396,6 +396,26 @@ def main():
           "the statistics block: 1 render job, 2 interrupts")
     print("  " + m.output.replace("\n", "\n  ").rstrip())
 
+    # a bin job that hangs on a list in a BO: *V3DRender shows where (0.05)
+    ret, b = ioctl(R["IOCTL_CREATE_BO"], struct.pack("<IIII", 4096, 0, 0, 0))
+    h2, off2 = struct.unpack("<IIII", b)[2], struct.unpack("<IIII", b)[3]
+    m.uc.mem_write(bo_area["base"] + off2, struct.pack("<8I", *range(0x11, 0x19)))
+    m.uc.mem_write(hlist, struct.pack("<I", h2))
+    cl = struct.pack("<9I4xQ4IQ", off2, off2 + 0x20, off2, off2 + 0x20, 0, 0, sync,
+                     0x3000, 0x8000, hlist, 1, 0, 0, 0, 0)
+    ret, _ = ioctl(R["IOCTL_SUBMIT_CL"], cl)
+    check(ret == 0 and m.started[-1] == ("bin", off2, off2 + 0x20), "a bin job that won't end")
+    m.core[R["CT0CA"]] = off2 + 0x10
+    for i in range(4):
+        m.time += 60
+        wait(0)
+    check(m.word(stats_addr + 4 * 13) >= 1, "found hung and reset")
+    m.output = ""
+    err = mod.command("V3DRender")
+    check(err is None and "First hang: bin job, list &%08X" % off2 in m.output
+          and "at &%08X: &00000011 &00000012" % off2 in m.output, "*V3DRender shows the hang")
+    print("  " + m.output.replace("\n", "\n  ").rstrip())
+
     out, e = mod.swi(2, {0: f})
     check(e is None, "V3DRender_Close")
     err = mod.finalise()

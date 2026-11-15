@@ -367,12 +367,19 @@ hex (const char *label, uint32_t v)
 static void
 show_hang (const char *what, const struct v3d_hang *h)
 {
-  static const char *const qname[] = { "bin", "render", "TFU", "compute", "cache clean" };
   if (h->q == ~0u)
     return;
   write0 (what);
   write0 (": ");
-  write0 (h->q < 5 ? qname[h->q] : "?");
+  /* (a switch, not a table of pointers: the module isn't relocated) */
+  switch (h->q)
+    {
+    case V3D_BIN: write0 ("bin"); break;
+    case V3D_RENDER: write0 ("render"); break;
+    case V3D_TFU: write0 ("TFU"); break;
+    case V3D_CSD: write0 ("compute"); break;
+    default: write0 ("?"); break;
+    }
   write0 (" job");
   if (h->start || h->end)
     {
