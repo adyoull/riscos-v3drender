@@ -1,29 +1,32 @@
-V3DRender 0.11: kit 13, frames read back faster
+V3DRender 0.12: kit 14, memory above 1 GB first
 ================================================
 
-riscos-mesa asked for two things so that drawing on the GPU isn't slowed
-down by reading each frame back from uncached memory:
+RISC3D now loads V3DRender at start-up, so it is always there when
+Reel plays a video with ReelHWAccel. The VideoCore (which decodes and
+encodes H.264 for ReelHWAccel, through VCHIQ) can only reach the first
+1 GB of RAM, and needs contiguous memory there. The V3D can reach all
+of it, so V3DRender 0.12 takes its memory from above 1 GB where it can.
 
-  - BOs the CPU maps cacheable (V3DRender keeps the caches right around
-    each GPU job), and
-  - the GPU drawing straight into the program's own memory (a sprite,
-    the screen): "importing" it.
+What's new to look at:
+  - *V3DRender now shows "above 1 GB" and "below 1 GB" under buffer
+    memory, and where the GPU's page table is. On a Pi with more than
+    1 GB, "below 1 GB" should stay 0 and the page table should say
+    "(above 1 GB)".
+  - Check's new test 12 makes an 8 MB buffer and reads where every
+    page is: all of them should be above 1 GB.
 
-Check's new test 11 draws a 1920x1080 frame into each kind - uncached
-as before, cached, and imported - after the CPU has read the old
-contents (so a missing cache invalidate would show), checks every
-pixel, draws a second frame on the same memory, and prints how fast
-the CPU reads the frame back. Please send Results: the MB/s figures
-are what riscos-mesa needs.
+Please send Results (from Check), and *V3DRender's output. If you can,
+play an H.264 video in Reel with hardware decoding while V3DRender is
+loaded, then run *V3DRender again.
 
-Everything from kit 12 (*V3DReset, HangTest's test 10) is unchanged.
+Everything from kit 13 (test 11's read-back figures) is unchanged.
 
 Before you start
 - A Pi 4, Pi 400 or CM4 with RISC OS 5.30 or later. V3DDriver not
   loaded. Copy this folder to a hard disc.
 
 The test
-1. Double-click Replay. It loads V3DRender 0.09 from this folder, in
+1. Double-click Replay. It loads V3DRender 0.12 from this folder, in
    place of an older one. No program should be using the GPU at the same time:
    Replay needs the buffer addresses Mesa's job had.
 2. Optional: double-click Check too (kits 1-5's tests, all passed in

@@ -472,6 +472,48 @@ test_cached_frame (const char *what, uint32_t w, uint32_t h, int mode)
   free (mem);
 }
 
+/* Test 12 (0.12): where an 8 MB buffer's pages are. V3DRender keeps
+   above 1 GB where it can, leaving the VideoCore's 1 GB to VCHIQ and
+   ReelHWAccel. Read from the GPU's page table (V3DRender_Debug 0). */
+static void
+test_where (void)
+{
+  struct bo b;
+  if (bo_new (&b, 8u << 20))
+    {
+      check (0, "an 8 MB buffer");
+      return;
+    }
+  unsigned pages = b.size >> 12, high = 0, runs = 0, unread = 0;
+  uint64_t lowest = ~0ull, prev = 0;
+  for (unsigned i = 0; i < pages; i++)
+    {
+      uint32_t pte = sys_pte (b.gpu + i * 4096);
+      if (!(pte & 1u << 28))
+	{
+	  unread++;
+	  continue;
+	}
+      uint64_t pa = (uint64_t) (pte & 0x0FFFFFFFu) << 12;
+      high += pa >= 0x40000000u;
+      if (pa < lowest)
+	lowest = pa;
+      if (!i || pa != prev + 4096)
+	runs++;
+      prev = pa;
+    }
+  unsigned ram = sys_ram_mb ();
+  printf ("    %u pages: %u above 1 GB, %u below, in %u contiguous run%s; lowest &%llX (RAM %u MB)\n",
+	  pages, high, pages - high - unread, runs, runs == 1 ? "" : "s",
+	  (unsigned long long) lowest, ram);
+  check (!unread, "every page's entry read (V3DRender_Debug 0)");
+  if (ram > 1024 + 64)
+    check (high == pages, "all of it above 1 GB, out of the VideoCore's way");
+  else
+    printf ("    (1 GB of RAM or unknown: nothing to check)\n");
+  bo_free (&b);
+}
+
 /* Test 6 (kit 3) gave the binner 8 KB for a 1080p frame: it didn't run out
    on the Pi 4, because a cleared frame has no primitives and the tile
    lists' first blocks aren't taken from that memory. Overflow needs drawn
@@ -1025,6 +1067,8 @@ main (int argc, char **argv)
       test_cached_frame ("1920x1080, uncached (as before)", 1920, 1080, 0);
       test_cached_frame ("1920x1080, DRM_RISCOS_BO_CPU_CACHED", 1920, 1080, 1);
       test_cached_frame ("1920x1080, the program's own memory (IMPORT_MEMORY)", 1920, 1080, 2);
+      printf ("\n12. Where the GPU's memory is: above 1 GB, out of the VideoCore's way (0.12)\n");
+      test_where ();
       printf ("\n7. Through RISC3D\n");
       test_risc3d ();
       uint32_t const *st = stats ();

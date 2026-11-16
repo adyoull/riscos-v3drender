@@ -303,6 +303,7 @@ void sys_risc3d_close (int c) { (void) c; }
 uint32_t sys_pte (uint32_t gpu) { return dev->pt[gpu >> 12]; }
 int sys_reset (int all) { (void) all; v3d_cancel_all (dev); return 0; }
 int sys_pa_width (void) { return dev->pa_width; }
+unsigned sys_ram_mb (void) { return 4096; }
 
 void
 sys_status (const char *also_to)

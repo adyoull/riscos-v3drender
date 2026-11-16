@@ -59,8 +59,16 @@ OS when there is one; the RISC OS layer here is the Pi 4's.
   mapped not cached but bufferable (Linux maps v3d BOs write-combined).
   They need not be contiguous: the GPU's MMU joins them up, with 64 KB
   and 1 MB entries where pages happen to be contiguous.
-- **The GPU's MMU**: a 4 MB page table (contiguous, from OS_Memory 12)
-  and a scratch page for illegal accesses, as Linux sets it up.
+- **Memory above 1 GB first** (0.12): the VideoCore reaches only the first
+  1 GB of RAM, so its users (VCHIQ, ReelHWAccel's H.264 decoder and
+  encoder) need contiguous memory there; the V3D's MMU reaches it all.
+  V3DRender asks OS_Memory 12 for runs of pages between 1 GB and 4 GB
+  (RISC OS 5.29+) and lets the kernel pick only when there are none (a
+  1 GB Pi, or memory above 1 GB used up). `*V3DRender` shows how much is
+  above and below 1 GB, and where the page table is.
+- **The GPU's MMU**: a 4 MB page table (contiguous, from OS_Memory 12,
+  above 1 GB where there is room) and a scratch page for illegal accesses,
+  as Linux sets it up.
 - **Jobs**: bin, render, TFU (texture formatting) and CSD (compute)
   queues, one job at a time each, started by the interrupt handler when
   the last one finishes. A render job waits for its bin job; a job waits

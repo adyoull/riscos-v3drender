@@ -18,6 +18,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 Copyright (c) 2026 Andrew Youll
 """
 import json
+import re
 import struct
 import sys
 
@@ -31,7 +32,7 @@ PM_LOG = 0x61000000
 HAL_CLEAR = RETURN + 0x100      # a HAL routine: counts, returns
 IRQ_STACK = 0x31000000
 AREA_BASE = 0x80000000          # dynamic areas are given out from here
-PHYS_BASE = 0x1_0000_0000       # "physical" pages, 64-bit on purpose
+GB = 0x40000000                 # physical page number = address >> 12, as on a Pi
 
 checks = failures = 0
 
@@ -64,7 +65,11 @@ class Pi4(Machine):
         self.saved = None
         self.areas = {}          # number -> dict(base, pages, claimed{idx: pa}, mapped set)
         self.area_next = AREA_BASE
-        self.phys_next = 0
+        self.phys_next = 0x10000                # low recommendations: from 256 MB
+        self.high_next = GB >> 12               # (0.12) above 1 GB: from 1 GB
+        self.high_limit = 0x100000              # a 4 GB Pi: nothing from 4 GB up
+        self.honour_range = True                # RISC OS 5.29+ (R4-R7)
+        self.mem12 = []                         # (flags, bytes, lo, hi) asked
         self.vector = None
         self.mailbox = []
         self.time = 1000
@@ -182,9 +187,23 @@ class Pi4(Machine):
                 out(3, {0xFEC00000: V3D_LOG, 0xFE100000: PM_LOG}[r[1]])
                 return
             if reason == 12:
-                self.phys_next = (self.phys_next + 1023) & ~1023   # contiguous run
-                out(3, 0x100000 + self.phys_next)
-                self.phys_next += r[1] // 4096
+                pages = (r[1] + 4095) // 4096
+                align = max(1, (1 << r[2]) >> 12)
+                ranged = bool(r[0] & (1 << 9))
+                lo = r[4] | (r[5] << 32) if ranged else 0
+                hi = r[6] | (r[7] << 32) if ranged else 0xFFFFFFFF
+                self.mem12.append((r[0], r[1], lo, hi))
+                if ranged and self.honour_range:
+                    check(lo >= GB and hi >= lo, "a range from 1 GB: &%X-&%X" % (lo, hi))
+                    start = (self.high_next + align - 1) // align * align
+                    if (start + pages) > min(self.high_limit, (hi + 1) >> 12):
+                        return self._fail(number, 0x1E7, "No contiguous memory in that range")
+                    self.high_next = start + pages
+                    out(3, start)
+                    return
+                start = (self.phys_next + align - 1) // align * align
+                self.phys_next = start + pages
+                out(3, start)
                 return
             if reason == 65:
                 um = getattr(self, "user_mem", None)
@@ -290,10 +309,11 @@ class Pi4(Machine):
                     a["claimed"].pop(idx, None)
                 else:
                     check(flags & (1 << 15), "pages are locked")
-                    if page == 0xFFFFFFFE:
-                        pa = PHYS_BASE + 0x40000000 + ((idx * 7919) % 50000) * 4096
+                    if page == 0xFFFFFFFE:      # the kernel picks: low memory
+                        pa = 0x08000000 + ((idx * 7919) % 50000) * 4096
+                        a["any"] = a.get("any", 0) + 1
                     else:
-                        pa = PHYS_BASE + (page - 0x100000) * 4096
+                        pa = page * 4096
                     a["claimed"][idx] = pa
             elif reason == 22:
                 addr = a["base"] + idx * 4096
@@ -347,10 +367,14 @@ def main():
     print("  areas: buffers %d pages at &%08X, page table at physical &%X"
           % (bo_area["pages"], bo_area["base"], pt_pa))
     check(bo_area["pages"] == 65536, "the buffer area is 256 MB by default (0.09)")
+    check(pt_pa >= GB and all(pt["claimed"][i] == pt_pa + i * 4096 for i in range(1024)),
+          "the page table is above 1 GB and contiguous (0.12)")
+    check(m.mem12 and m.mem12[0][0] == 12 | 1 << 9 and m.mem12[0][2] == GB,
+          "asked OS_Memory 12 for memory from 1 GB: %s" % m.mem12[:1])
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 11 and out[8] != 0, "version 0.11, statistics in r8")
+    check(out[0] == 12 and out[8] != 0, "version 0.12, statistics in r8")
     stats_addr = out[8]
 
     # RISC3D: registered as a DRM device; its calls open, describe, close
@@ -396,6 +420,10 @@ def main():
     pte = m.word(pt["base"] + (offset >> 12) * 4)
     pa = bo_area["claimed"][bo_area["mapped"][offset >> 12]]
     check(pte & (1 << 28) and (pte & 0xFFFFFF) == pa >> 12, "its PTE (&%08X)" % pte)
+    pas = [bo_area["claimed"][bo_area["mapped"][(offset >> 12) + i]] for i in range(5)]
+    check(all(x >= GB for x in pas) and pas == [pas[0] + 4096 * i for i in range(5)],
+          "a small BO's pages are above 1 GB, in a run (0.12)")
+    check(not bo_area.get("any"), "none was left to the kernel")
 
     ret, b = ioctl(R["IOCTL_SYNCOBJ_CREATE"], struct.pack("<II", 0, 0))
     sync = struct.unpack("<II", b)[0]
@@ -461,6 +489,37 @@ def main():
         ret, _ = ioctl(R["IOCTL_GEM_CLOSE"], struct.pack("<II", h, 0))
         check(ret == 0, "GEM_CLOSE %d" % h)
     check(not m.word(pt["base"] + (ioff >> 12) * 4) & (1 << 28), "the import is out of the MMU")
+
+    # (0.12) a 1 MB BO above 1 GB; then with nothing left there, the kernel's pages
+    ret, b = ioctl(R["IOCTL_CREATE_BO"], struct.pack("<IIII", 1 << 20, 0, 0, 0))
+    bh, boff = struct.unpack("<IIII", b)[2], struct.unpack("<IIII", b)[3]
+    pas = [bo_area["claimed"][bo_area["mapped"][(boff >> 12) + i]] for i in range(256)]
+    check(ret == 0 and all(x >= GB for x in pas) and pas == [pas[0] + 4096 * i for i in range(256)],
+          "a 1 MB BO: above 1 GB, contiguous")
+    big_pte = m.word(pt["base"] + (boff >> 12) * 4)
+    m.high_limit = m.high_next + 40                 # room for 40 pages only
+    ret, b = ioctl(R["IOCTL_CREATE_BO"], struct.pack("<IIII", 100 * 4096, 0, 0, 0))
+    lh, loff = struct.unpack("<IIII", b)[2], struct.unpack("<IIII", b)[3]
+    pas = [bo_area["claimed"][bo_area["mapped"][(loff >> 12) + i]] for i in range(100)]
+    hi_n = sum(x >= GB for x in pas)
+    check(ret == 0 and 16 <= hi_n <= 40 and bo_area.get("any") == 100 - hi_n
+          and all(x >= GB for x in pas[:hi_n]),
+          "high memory short: %d pages above 1 GB, the rest from the kernel" % hi_n)
+    check(bytes(m.uc.mem_read(bo_area["base"] + loff + 99 * 4096, 16)) == b"\0" * 16,
+          "and the BO is still whole and zeroed")
+    m.output = ""
+    err = mod.command("V3DRender")
+    used = re.search(r"in use \(KB\): +(\d+)", m.output)
+    above = re.search(r"above 1 GB \(KB\): +(\d+)", m.output)
+    check(err is None and used and above
+          and int(above.group(1)) + (100 - hi_n) * 4 == int(used.group(1))
+          and "below 1 GB (KB):     %d" % ((100 - hi_n) * 4) in m.output
+          and "Page table at:         &%08X (above 1 GB)" % pt_pa in m.output,
+          "*V3DRender says where the buffers are: %d high\n%s" % (hi_n, m.output))
+    for h in (bh, lh):
+        ret, _ = ioctl(R["IOCTL_GEM_CLOSE"], struct.pack("<II", h, 0))
+        check(ret == 0, "GEM_CLOSE %d" % h)
+    m.high_limit = 0x100000
 
     m.output = ""
     err = mod.command("V3DRender")
@@ -568,6 +627,25 @@ def main():
     check(area_after("", "32") == (None, 8192), "V3DRender$Size 32: a 32 MB area")
     check(area_after("Size 64", "32") == (None, 16384), "the option over the variable")
     check(area_after("Size 1024") == (None, 65536), "Size 1024 where only 256 MB fits: 256 MB")
+
+    # (0.12) a 1 GB Pi (nothing above 1 GB), and a RISC OS older than 5.29
+    for what, setup in (("a 1 GB Pi", lambda m: setattr(m, "high_limit", GB >> 12)),
+                        ("RISC OS before 5.29", lambda m: setattr(m, "honour_range", False))):
+        m4 = Pi4()
+        setup(m4)
+        mod4 = Module(m4, data, 0x20010000)
+        err = initialise(mod4, "NoWFI")
+        pt4 = [a for a in m4.areas.values() if a["name"] == "V3DRender page table"]
+        ok = err is None and pt4 and pt4[0]["claimed"][0] < GB
+        if ok:
+            out, e = mod4.swi(1, {0: 0})
+            A4 = SCRATCH + 0x8000
+            m4.uc.mem_write(A4, struct.pack("<IIII", 64 * 4096, 0, 0, 0))
+            o2, e2 = mod4.swi(3, {0: out[0], 1: R["IOCTL_CREATE_BO"], 2: A4})
+            ok = e2 is None and o2[0] == 0
+            mod4.swi(2, {0: out[0]})
+        check(ok, "%s: loads, page table below 1 GB, a BO still made" % what)
+        mod4.finalise()
 
 
 try:

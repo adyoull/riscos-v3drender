@@ -69,6 +69,15 @@ sys_reset (int all)
   return _swix (0xC3D44, _IN (0), all) ? -1 : 0;
 }
 
+unsigned
+sys_ram_mb (void)
+{
+  unsigned pages = 0, size = 0;
+  if (_swix (OS_Memory, _IN (0) | _OUT (1) | _OUT (2), 8 | 1 << 8, &pages, &size))
+    return 0;
+  return (unsigned) ((unsigned long long) pages * size >> 20);
+}
+
 int
 sys_pa_width (void)
 {

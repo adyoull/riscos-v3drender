@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.12: memory above 1 GB first, leaving the VideoCore's memory free (16 November 2026)
+
+RISC3D now loads V3DRender at start-up, so it is always there when ReelHWAccel runs. The VideoCore can reach only the first 1 GB of RAM, and ReelHWAccel's H.264 decoder and encoder (and VCHIQ) need contiguous memory there. The V3D's MMU reaches all of it, so V3DRender now keeps out of that 1 GB where it can (the owner's request).
+
+- **Buffers:** pages are claimed as runs of contiguous pages between 1 GB and 4 GB (OS_Memory 12 with a range, RISC OS 5.29+). A run that can't be had is halved, down to 64 KB (16 pages; smaller BOs ask for their own size); only what is left after that comes from the kernel's choice, as before. Contiguous runs also give the GPU's MMU more 64 KB and 1 MB entries.
+- **The page table** (4 MB, contiguous) comes from above 1 GB too, else from anywhere as before.
+- **No change** on a 1 GB Pi (nothing above 1 GB) or a RISC OS before 5.29 (which ignores the range), except one extra OS_Memory 12 call per BO.
+- **`*V3DRender`** shows the buffer memory in use above and below 1 GB, and the page table's physical address.
+- **Kit 14:** V3DJob test 12 (Check) makes an 8 MB buffer, reads every page's entry from the GPU's page table, and checks all of it is above 1 GB when the Pi has more than 1 GB (OS_Memory 8).
+- **Tests (emulator, now with physical page numbers as on a Pi):** the page table above 1 GB and contiguous, with OS_Memory 12 asked from 1 GB; a 5-page and a 1 MB BO above 1 GB in one run; with room for only 40 pages above 1 GB, a 100-page BO gets 25 there and the rest from the kernel, whole and zeroed; `*V3DRender`'s figures; a 1 GB Pi and a RISC OS before 5.29 both still load and make BOs. Three mutations (no range asked, no high runs, the page table not high) caught.
+
 ## 0.11: cached BOs and imported memory, for frames read back (15 November 2026)
 
 This answers riscos-mesa's `2026-11-15-mesa-v3drender-cached-reads-and-import.md`. Their EGL/OSMesa draw on the GPU in about 1 ms a frame at 640x480, then spend about 5.5 ms reading it from an uncached BO, at about 215 MB/s.

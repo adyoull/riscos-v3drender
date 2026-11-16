@@ -30,7 +30,7 @@
 #include "v3d_regs.h"
 #include "plat_pi4.h"
 
-#define VERSION 11		/* 0.11 */
+#define VERSION 12		/* 0.12 */
 #define SWI_BASE 0xC3D40
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -623,6 +623,36 @@ mod_command (int index, const char *tail, int argc)
   line ("Clock (MHz):           ", hz / 1000000);
   line ("Buffer memory (KB):    ", dev->area_pages * 4);
   line ("  in use (KB):         ", dev->pages_used * 4);
+  /* (0.12) how much of it is above 1 GB, out of the VideoCore's reach */
+  uint32_t high = 0, low = 0;
+  for (int bo = 1; bo < V3D_MAX_BOS; bo++)
+    {
+      struct v3d_bo *b = &dev->bos[bo];
+      if (!b->used || b->imported)
+	continue;
+      for (uint32_t i = 0; i < b->npages; i++)
+	{
+	  uint32_t pte = dev->pt[b->first + i];
+	  if (!(pte & (1u << 28)))
+	    continue;
+	  if ((pte & 0x0FFFFFFFu) >= 0x40000u)	/* page frame of 1 GB */
+	    high++;
+	  else
+	    low++;
+	}
+    }
+  line ("  above 1 GB (KB):     ", high * 4);
+  line ("  below 1 GB (KB):     ", low * 4);
+  uint64_t pt = pi4_pt_pa ();
+  write0 ("Page table at:         &");
+  if (pt >> 32)
+    {
+      write_hex8 ((uint32_t) (pt >> 32));
+      write0 ("_");
+    }
+  write_hex8 ((uint32_t) pt);
+  write0 (pt >= 0x40000000u ? " (above 1 GB)" : " (below 1 GB)");
+  newline ();
   int n = 0;
   for (int i = 0; i < V3D_MAX_FILES; i++)
     n += dev->files[i].used;

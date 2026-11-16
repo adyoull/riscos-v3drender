@@ -467,12 +467,56 @@ pmp_pa (struct pmp *a, uint32_t page)
   return r.r[0] | ((uint64_t) r.r[1] << 32);
 }
 
+/* Memory above 1 GB first (0.12). The VideoCore reaches only the first
+   1 GB of RAM, so ReelHWAccel's H.264 buffers (and VCHIQ's) must come
+   from there; the V3D's MMU reaches all of it. So V3DRender asks
+   OS_Memory 12 for runs of contiguous pages between 1 GB and 4 GB
+   (R4-R7, RISC OS 5.29+; an older RISC OS ignores the range and
+   recommends from anywhere, as before), and only when there are none
+   lets the kernel pick. Contiguous runs also let the GPU use 64 KB and
+   1 MB pages. A Pi with 1 GB has nothing above, and gets what it had. */
+#define HIGH_FROM	0x40000000u
+#define HIGH_MIN_RUN	16u			/* 64 KB: smaller isn't worth a search */
+
+static uint32_t
+high_run (uint32_t pages, uint32_t align_log2)
+{
+  regs r = {{ 12u | 1u << 9, pages << 12, align_log2, 0,
+	      HIGH_FROM, 0, 0xFFFFFFFFu, 0 }};
+  if (swix_regs (OS_Memory, &r))
+    return DA_RELEASE;
+  return r.r[3];
+}
+
 int
 plat_pages_claim (struct v3d_dev *v3d, uint32_t first, uint32_t n, int cached)
 {
   (void) v3d;
-  return pmp_claim_map (&pi4.bo, first, n, DA_RELEASE,
-			PAGE_AP_USER_RW | (cached ? PAGE_CACHED_REQ : 0)) ? -1 : 0;
+  uint32_t ap = PAGE_AP_USER_RW | (cached ? PAGE_CACHED_REQ : 0);
+  uint32_t done = 0, run = n, least = n < HIGH_MIN_RUN ? n : HIGH_MIN_RUN;
+  while (done < n && run >= least && run)
+    {
+      if (run > n - done)
+	run = n - done;
+      uint32_t page = high_run (run, 12);
+      if (page == DA_RELEASE
+	  || pmp_claim_map (&pi4.bo, first + done, run, page, ap))
+	{
+	  run /= 2;				/* (a failed claim released its own) */
+	  continue;
+	}
+      done += run;
+    }
+  if (done < n)
+    {
+      if (pmp_claim_map (&pi4.bo, first + done, n - done, DA_RELEASE, ap))
+	{
+	  if (done)
+	    pmp_unmap_release (&pi4.bo, first, done);
+	  return -1;
+	}
+    }
+  return 0;
 }
 
 /* (0.11) OS_Memory 65: a logical address's physical address (64-bit) */
@@ -533,10 +577,16 @@ pi4_memory (struct v3d_dev *v3d)
   e = pmp_create (&pi4.pt, "V3DRender page table", 1025);
   if (e)
     return e;
-  regs r = {{ 12, 4u << 20, 12 }};
-  if (swix_regs (OS_Memory, &r))
-    return ERR (err_pt);
-  e = pmp_claim_map (&pi4.pt, 0, 1024, r.r[3], PAGE_AP_PRIVILEGED);
+  /* above 1 GB if there is room (0.12), else anywhere */
+  uint32_t page = high_run (1024, 12);
+  if (page == DA_RELEASE)
+    {
+      regs r = {{ 12, 4u << 20, 12 }};
+      if (swix_regs (OS_Memory, &r))
+	return ERR (err_pt);
+      page = r.r[3];
+    }
+  e = pmp_claim_map (&pi4.pt, 0, 1024, page, PAGE_AP_PRIVILEGED);
   if (!e)
     e = pmp_claim_map (&pi4.pt, 1024, 1, DA_RELEASE, PAGE_AP_PRIVILEGED);
   if (e)
@@ -597,6 +647,13 @@ plat_irq_restore (unsigned cpsr)
    interrupts on. */
 int pi4_no_wfi;
 uint32_t pi4_area_mb = 256;
+
+/* where the page table is (for *V3DRender) */
+uint64_t
+pi4_pt_pa (void)
+{
+  return pi4.pt.area ? pmp_pa (&pi4.pt, 0) : 0;
+}
 void
 plat_wait (void)
 {
