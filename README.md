@@ -6,12 +6,32 @@ runs in the program and sends its work to V3DRender, as it sends it to
 Linux's v3d driver through a DRM device. RISC3D lists V3DRender as the
 machine's 3D driver.
 
-**Version 0.04, 15 November 2026.** On the owner's Pi 4, kit 1 (0.01: loading,
-power-up, buffers, reload) and kit 2 (0.02: cleared frames through the
-queues, the GPU's MMU and its interrupt, 1080p at 555 frames a second,
-the reset after a hang) passed. Kit 3 (0.04): the TFU and RISC3D passed;
-kit 4 retries the compute job with the single-segment flag. The SWI chunk (&C3D40) and error block (&81D340) are
-provisional.
+**Version 0.12, 16 November 2026.** Tested on a Raspberry Pi 4 under native
+RISC OS 5:
+
+- Mesa's v3d driver (Mesa 26.1.6, through riscos-mesa) draws with it:
+  OpenGL 2.1 and GLES 2, 100 frames of 1920x1080 in 37 cs.
+- The kit's own jobs: cleared 1080p frames at 540 a second, the TFU
+  (texture formatting), compute on every QPU, the GPU's MMU, its
+  interrupt, and the reset after a hang.
+- Frames read back by the CPU at about 2.6 to 3.9 GB/s from cached
+  buffers or the program's own memory (151 MB/s from ordinary buffers).
+- It works alongside ReelHWAccel: Reel decodes on the VideoCore while
+  V3DRender is loaded, because V3DRender keeps its memory above 1 GB.
+
+The SWI chunk (&C3D40) and error block (&81D340) are provisional.
+
+**Programs never call V3DRender themselves: they reach it through RISC3D**
+(see [`docs/INTERFACE.md`](docs/INTERFACE.md)). Its own SWIs are for RISC3D
+and its test tools.
+
+## Installing
+
+V3DRender comes inside RISC3D (`!RISC3D.GPU`), which loads it at start-up.
+On its own: RISC OS 5.30 or later on a Pi 4, Pi 400 or CM4, with Rob
+Heaton's V3DDriver not loaded. `*RMLoad V3DRender` before RISC3D (0.03 or
+later), which then lists it as the machine's GPU driver. The test kit
+(V3DRenderTest) checks a machine: run Check and read Results.
 
 ## How it fits
 
@@ -86,8 +106,7 @@ OS when there is one; the RISC OS layer here is the Pi 4's.
   so the module can be reloaded.
 
 Not yet: performance counters, ioctl extensions (multisync), the CPU
-queue, sharing BOs between files (PRIME), super pages as a request,
-cached BO memory with cache maintenance (faster CPU reads).
+queue, sharing BOs between files (PRIME), super pages as a request.
 
 ## SWIs (provisional)
 
@@ -100,10 +119,11 @@ structures and the libdrm layer.
 | `V3DRender_Open` (&C3D41) | r0 = flags (0) | r0 = file |
 | `V3DRender_Close` (&C3D42) | r0 = file | |
 | `V3DRender_Ioctl` (&C3D43) | r0 = file, r1 = request (Linux's number), r2 -> structure | r0 = 0 or -errno |
-| `V3DRender_Reset` (&C3D44) | | |
+| `V3DRender_Reset` (&C3D44) | r0 bit 0: also close every file | |
+| `V3DRender_Debug` (&C3D45) | r0 = 0, r1 = GPU address; or r0 = 1 | r0 = page table entry; or r0, r1 = the MMU's address widths |
 
 `*V3DRender` shows the GPU and what it has done; `*V3DClock [MHz]`;
-`*V3DPower [cycle]`; `*V3DDump <file>`.
+`*V3DPower [cycle]`; `*V3DDump <file>`; `*V3DReset [all]`.
 
 **If something goes wrong (0.10):** `*V3DReset` ends every GPU job, running or
 waiting, and resets the GPU. Programs waiting for those jobs are told they
@@ -146,7 +166,7 @@ proven.
 
 ## Building
 
-`RISCOS_TOOLCHAIN=<riscos-crossdev 1.11>/toolchain ./build.sh` builds the
+`RISCOS_TOOLCHAIN=<riscos-crossdev 1.11 toolchain directory> ./build.sh` builds the
 module and the kit into `out/` and runs both tests (the emulator test
 needs `pip install unicorn`).
 
