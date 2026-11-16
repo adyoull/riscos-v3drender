@@ -86,6 +86,46 @@ find_pages (struct v3d_dev *v3d, uint32_t n, uint32_t *first)
   return 1;
 }
 
+/* (0.13) n free pages from a multiple of align (pages), as Linux's
+   drm_mm aligns BOs of 64 KB and 1 MB: then the GPU's MMU can use 64 KB
+   and 1 MB entries for them, where the physical pages line up too */
+static int
+range_free (struct v3d_dev *v3d, uint32_t p, uint32_t n)
+{
+  uint32_t end = p + n;
+  while (p < end)
+    {
+      if ((p & 31) == 0 && p + 32 <= end)
+	{
+	  if (v3d->page_map[p >> 5])
+	    return 0;
+	  p += 32;
+	  continue;
+	}
+      if (page_used (v3d, p))
+	return 0;
+      p++;
+    }
+  return 1;
+}
+
+/* Aligned BOs are placed from the top of the area down, the rest first
+   fit from the bottom, so the small ones don't break up the aligned
+   space (and a *V3DDump's small BOs still replay at their addresses). */
+static int
+find_pages_aligned (struct v3d_dev *v3d, uint32_t n, uint32_t *first)
+{
+  uint32_t align = n >= 256 ? 256 : n >= 16 ? 16 : 1;
+  if (align > 1 && n < v3d->area_pages)
+    for (uint32_t p = (v3d->area_pages - n) & ~(align - 1); p >= align; p -= align)
+      if (range_free (v3d, p, n))
+	{
+	  *first = p;
+	  return 1;
+	}
+  return find_pages (v3d, n, first);
+}
+
 int
 v3d_bo_create (struct v3d_dev *v3d, uint32_t bytes, int *bo_out)
 {
@@ -105,7 +145,13 @@ v3d_bo_create_cached (struct v3d_dev *v3d, uint32_t bytes, int cached, int *bo_o
   int bo;
   for (bo = 1; bo < V3D_MAX_BOS && v3d->bos[bo].used; bo++)
     ;
-  if (bo == V3D_MAX_BOS || !find_pages (v3d, n, &first))
+  uint32_t at = v3d->place_at;
+  v3d->place_at = 0;
+  if (at && at + n <= v3d->area_pages && range_free (v3d, at, n))
+    first = at;				/* (0.13) the replay's address */
+  else if (bo == V3D_MAX_BOS || !find_pages_aligned (v3d, n, &first))
+    return -V3D_ENOMEM;
+  if (bo == V3D_MAX_BOS)
     return -V3D_ENOMEM;
   if (plat_pages_claim (v3d, first, n, cached))
     return -V3D_ENOMEM;
@@ -198,7 +244,7 @@ void
 v3d_bo_cpu_clean (struct v3d_dev *v3d, int bo)
 {
   struct v3d_bo *b = &v3d->bos[bo];
-  if (b->cached || b->imported)
+  if (v3d_bo_cpu_cached (b))
     plat_cache_clean (v3d_bo_cpu (v3d, bo), b->npages * V3D_PAGE);
 }
 

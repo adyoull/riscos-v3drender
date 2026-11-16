@@ -14,6 +14,7 @@ unsigned now_cs (void);
 void sys_status (const char *also_to);
 const uint32_t *sys_stats (void);	/* V3DRender_Info r8 */
 uint32_t sys_pte (uint32_t gpu);	/* V3DRender_Debug 0 (0.07): 0 if none */
+int sys_place_at (uint32_t gpu);	/* V3DRender_Debug 2 (0.13): -1 if older */
 int sys_pa_width (void);		/* V3DRender_Debug 1; 0 if older */
 unsigned sys_ram_mb (void);		/* OS_Memory 8: the DRAM (0.12); 0 if unknown */
 int sys_reset (int all);		/* V3DRender_Reset (0.10: ends every job) */

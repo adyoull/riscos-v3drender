@@ -6,7 +6,7 @@ runs in the program and sends its work to V3DRender, as it sends it to
 Linux's v3d driver through a DRM device. RISC3D lists V3DRender as the
 machine's 3D driver.
 
-**Version 0.12, 16 November 2026.** Tested on a Raspberry Pi 4 under native
+**Version 0.13, 16 November 2026.** Tested on a Raspberry Pi 4 under native
 RISC OS 5:
 
 - Mesa's v3d driver (Mesa 26.1.6, through riscos-mesa) draws with it:
@@ -97,8 +97,17 @@ OS when there is one; the RISC OS layer here is the Pi 4's.
 - **Binner overflow**: a pool of 256 KB buffers given to the binner from
   the interrupt when it runs out, returned when the render job is done.
 - **Hangs**: a job that makes no progress for 500 ms (Linux's timeout)
-  resets the GPU, at the next call into the driver; the jobs then running
-  are ended, and their fences signalled.
+  resets the GPU, at the next call into the driver; the job that hung is
+  ended and its fence signalled. Since 0.13 the jobs running on the other
+  queues run again, as Linux resubmits them.
+- **Big pages** (0.13): BOs of 64 KB and 1 MB or more are aligned as
+  Linux aligns them, so the GPU's MMU uses 64 KB and 1 MB entries.
+- **GPU time** (0.13): per queue, per file and for everyone
+  (`DRM_IOCTL_RISCOS_FILE_STATS`, `*V3DRender`).
+- **Refusing to start** where there's no V3D 4.2: anything but a Pi 4,
+  400 or CM4 (asked through BCMSupport's board revision, so nothing else
+  is touched), or a V3D that doesn't answer. RISC3D's package carries
+  V3DRender to every machine and loads the first GPU driver that starts.
 - **Clock**: raised to the firmware's maximum while files are open, put
   back when the last closes. `*V3DClock` shows or sets it.
 - **Power**: the sequence is Rob Heaton's (V3DDriver), proven on Pi 4s.
@@ -106,7 +115,7 @@ OS when there is one; the RISC OS layer here is the Pi 4's.
   so the module can be reloaded.
 
 Not yet: performance counters, ioctl extensions (multisync), the CPU
-queue, sharing BOs between files (PRIME), super pages as a request.
+queue, sharing BOs between files (PRIME).
 
 ## SWIs (provisional)
 
@@ -120,7 +129,7 @@ structures and the libdrm layer.
 | `V3DRender_Close` (&C3D42) | r0 = file | |
 | `V3DRender_Ioctl` (&C3D43) | r0 = file, r1 = request (Linux's number), r2 -> structure | r0 = 0 or -errno |
 | `V3DRender_Reset` (&C3D44) | r0 bit 0: also close every file | |
-| `V3DRender_Debug` (&C3D45) | r0 = 0, r1 = GPU address; or r0 = 1 | r0 = page table entry; or r0, r1 = the MMU's address widths |
+| `V3DRender_Debug` (&C3D45) | r0 = 0, r1 = GPU address; r0 = 1; or r0 = 2, r1 = GPU address | r0 = page table entry; r0, r1 = the MMU's address widths; or (2, 0.13) the next BO starts at r1 if free (the kit's replay) |
 
 `*V3DRender` shows the GPU and what it has done; `*V3DClock [MHz]`;
 `*V3DPower [cycle]`; `*V3DDump <file>`; `*V3DReset [all]`.

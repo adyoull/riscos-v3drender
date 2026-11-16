@@ -1,3 +1,27 @@
+V3DRender 0.13: kit 15
+======================
+
+riscos-mesa asked for four things after comparing V3DRender with
+Linux's driver, and RISC3D asked that V3DRender refuse to start on
+machines without a V3D (it will be in RISC3D's one package, on every
+machine).
+
+What's new to look at:
+  - *V3DRender shows how much buffer memory is in 1 MB and 64 KB
+    entries (big entries mean fewer GPU TLB misses), the GPU time per
+    queue in ms, and "jobs run again after" resets.
+  - Check's test 12 now also checks its 8 MB buffer is all in 1 MB
+    entries. Test 13 shows this program's GPU time per queue.
+  - Test 2's 1080p frame rate: compare with kit 14's 540 frames a
+    second (the frames are now in 1 MB entries).
+  - Replay: as before, 10 runs hang by design. Since 0.13 a hang no
+    longer ends the jobs on other queues; they run again.
+
+Please send Results (Check, then Replay), and *V3DRender's output.
+
+If you have a Pi 3 or another machine to hand: *RMLoad V3DRender there
+should just give an error ("V3DRender needs a Raspberry Pi 4...").
+
 V3DRender 0.12: kit 14, memory above 1 GB first
 ================================================
 

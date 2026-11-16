@@ -69,13 +69,16 @@ v3d_wr (struct v3d_dev *v3d, int bank, uint32_t off, uint32_t val)
 }
 
 /* scattered pages: each group of 16 is contiguous, groups reversed; the
-   first 512 pages are one contiguous run, for the super page test */
+   first 1024 pages and the top 2048 (where aligned BOs go, 0.13) are
+   contiguous runs, for the super page tests */
 uint64_t
 plat_page_pa (struct v3d_dev *v3d, uint32_t page)
 {
   (void) v3d;
-  if (page < 512)
+  if (page < 1024)
     return 0x100000000ull + (uint64_t) page * 4096;
+  if (page >= 2048)
+    return 0x300000000ull + (uint64_t) page * 4096;
   uint32_t g = page / 16, i = page % 16;
   return 0x200000000ull + (uint64_t) ((1000 - g) * 16 + i) * 4096;
 }
@@ -113,6 +116,8 @@ plat_pages_release (struct v3d_dev *v3d, uint32_t first, uint32_t n)
 
 void plat_gpu_reset (struct v3d_dev *v3d) { (void) v3d; resets++; memset (busy, 0, sizeof busy); }
 uint32_t plat_time_cs (void) { return now_cs; }
+static uint64_t ns_ticks;
+uint64_t plat_time_ns (void) { return (uint64_t) now_cs * 10000000u + (ns_ticks += 1000); }
 void plat_barrier (void) { }
 unsigned plat_irq_off (void) { return 0; }
 void plat_irq_restore (unsigned s) { (void) s; }
@@ -618,6 +623,125 @@ test_old_struct_csd_reset (void)
   teardown ();
 }
 
+/* (0.13) riscos-mesa's four: aligned BOs for 64K/1M entries, busy time
+   per file, uncached imports, innocent jobs run again after a reset */
+static void
+test_013 (void)
+{
+  setup (42);
+  CHECK (v3d_hw_probe (dev) == 0 && v3d_init (dev) == 0);
+  int f = v3d_open (dev, 1), g = v3d_open (dev, 2);
+
+  /* alignment: 1 MB BOs on a 1 MB GPU address, 64 KB ones on 64 KB */
+  uint32_t o4k, o1m, o64k, o20k;
+  bo_new (f, 4096, &o4k);
+  uint32_t h1m = bo_new (f, 1 << 20, &o1m);
+  bo_new (f, 65536, &o64k);
+  bo_new (f, 20480, &o20k);
+  CHECK ((o1m & 0xFFFFF) == 0 && (o64k & 0xFFFF) == 0);
+  CHECK (o20k < o1m);				/* small ones still fill holes */
+  uint32_t p1m = o1m >> 12, p64k = o64k >> 12;
+  /* the sim's first 512 pages are physically contiguous: a super page */
+  CHECK (p1m >= 2048 && (pt[p1m] & (1u << 31)) && (pt[p1m + 255] & (1u << 31)));
+  /* later pages are contiguous in aligned 16s: big pages */
+  CHECK ((pt[p64k] & (1u << 30)) && (pt[p64k + 15] & (1u << 30)) && !(pt[p64k] & (1u << 31)));
+  (void) h1m;
+
+  /* busy time per file (DRM_IOCTL_RISCOS_FILE_STATS) */
+  struct drm_riscos_file_stats st;
+  memset (&st, 0xEE, sizeof st);
+  CHECK (ioctl_ (f, DRM_IOCTL_RISCOS_FILE_STATS, &st) == 0);
+  CHECK (st.file[V3D_BIN].jobs == 0 && st.file[V3D_RENDER].busy_ns == 0);
+  struct drm_v3d_submit_cl s = { .bcl_start = 0x30, .bcl_end = 0x31, .rcl_start = 0x40,
+				 .rcl_end = 0x50 };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &s) == 0);
+  sim_finish (V3D_BIN);
+  sim_finish (V3D_RENDER);
+  uint32_t b = bo_new (g, 4096, 0);
+  struct drm_v3d_submit_csd c = { .cfg = { 0x10000, 0x10000, 0x10000, 0, 7, 0x100, 0x200 },
+				  .bo_handles = (uintptr_t) &b, .bo_handle_count = 1 };
+  CHECK (ioctl_ (g, DRM_IOCTL_V3D_SUBMIT_CSD, &c) == 0);
+  sim_finish (V3D_CSD);
+  v3d_service (dev);
+  CHECK (ioctl_ (f, DRM_IOCTL_RISCOS_FILE_STATS, &st) == 0);
+  CHECK (st.file[V3D_BIN].jobs == 1 && st.file[V3D_RENDER].jobs == 1
+	 && st.file[V3D_BIN].busy_ns > 0 && st.file[V3D_RENDER].busy_ns > 0
+	 && st.file[V3D_CSD].jobs == 0 && st.file[V3D_CSD].busy_ns == 0);
+  CHECK (st.all[V3D_CSD].jobs == 1 && st.all[V3D_CACHE_CLEAN].jobs == 1
+	 && st.all[V3D_CACHE_CLEAN].busy_ns > 0
+	 && st.all[V3D_BIN].busy_ns == st.file[V3D_BIN].busy_ns);
+  struct drm_riscos_file_stats sg;
+  CHECK (ioctl_ (g, DRM_IOCTL_RISCOS_FILE_STATS, &sg) == 0);
+  CHECK (sg.file[V3D_CSD].jobs == 1 && sg.file[V3D_CACHE_CLEAN].jobs == 1
+	 && sg.file[V3D_CSD].busy_ns > 0 && sg.file[V3D_BIN].jobs == 0);
+  CHECK (dev->stats.busy_ns[V3D_CSD] == sg.file[V3D_CSD].busy_ns);
+
+  /* an uncached import: no cache maintenance; unknown flags refused */
+  static uint8_t scr[4 * 4096] __attribute__ ((aligned (4096)));
+  struct drm_riscos_import_memory im = { .address = (uintptr_t) scr, .size = sizeof scr,
+					 .flags = DRM_RISCOS_IMPORT_UNCACHED };
+  CHECK (ioctl_ (f, DRM_IOCTL_RISCOS_IMPORT_MEMORY, &im) == 0 && im.handle);
+  CHECK (dev->bos[dev->files[f].handles[im.handle]].nocache);
+  unsigned cl0 = cache_cleans, in0 = cache_invals;
+  struct drm_v3d_submit_cl k = { .rcl_start = 0x10, .rcl_end = 0x20,
+				 .bo_handles = (uintptr_t) &im.handle, .bo_handle_count = 1 };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &k) == 0);
+  sim_finish (V3D_RENDER);
+  v3d_service (dev);
+  struct drm_v3d_get_param gp = { .param = DRM_V3D_PARAM_SUPPORTS_TFU };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_GET_PARAM, &gp) == 0);
+  CHECK (cache_cleans == cl0 && cache_invals == in0 && dev->files[f].nstale == 0);
+  struct drm_riscos_import_memory im2 = { .address = (uintptr_t) scr, .size = 4096, .flags = 2 };
+  CHECK (ioctl_ (f, DRM_IOCTL_RISCOS_IMPORT_MEMORY, &im2) == -V3D_EINVAL);
+  im2.flags = 0;					/* a cached one still is */
+  CHECK (ioctl_ (f, DRM_IOCTL_RISCOS_IMPORT_MEMORY, &im2) == 0);
+  k.bo_handles = (uintptr_t) &im2.handle;
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &k) == 0 && cache_cleans == cl0 + 1);
+  sim_finish (V3D_RENDER);
+
+  /* a render job hangs while the next frame's bin job runs: the bin
+     job is run again (Linux's resubmit), and its render job then runs */
+  uint32_t o1 = syncobj (f, 0), o2 = syncobj (f, 0);
+  s.out_sync = o1;
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &s) == 0);
+  sim_finish (V3D_BIN);				/* frame 1's render job starts */
+  struct drm_v3d_submit_cl s2 = { .bcl_start = 0x60, .bcl_end = 0x61, .rcl_start = 0x70,
+				  .rcl_end = 0x80, .out_sync = o2 };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &s2) == 0);
+  CHECK (busy[V3D_BIN] && busy[V3D_RENDER]);	/* both on the GPU */
+  regs[V3D_BANK_CORE0][V3D_CLE_CT0QBA / 4] = 0;
+  int r0 = resets;
+  now_cs += 20;
+  v3d_service (dev);
+  now_cs += 60;
+  regs[V3D_BANK_CORE0][V3D_CLE_CTNCA (0) / 4] += 8;	/* the bin job is moving */
+  v3d_service (dev);
+  CHECK (resets == r0 + 1 && dev->stats.requeued == 1);
+  CHECK (syncobj_done (f, o1) && !syncobj_done (f, o2));
+  CHECK (busy[V3D_BIN] && regs[V3D_BANK_CORE0][V3D_CLE_CT0QBA / 4] == 0x60);	/* again */
+  sim_finish (V3D_BIN);
+  CHECK (busy[V3D_RENDER] && regs[V3D_BANK_CORE0][V3D_CLE_CT1QBA / 4] == 0x70);
+  sim_finish (V3D_RENDER);
+  CHECK (syncobj_done (f, o2));
+  struct drm_v3d_get_param rc = { .param = DRM_V3D_PARAM_CONTEXT_RESET_COUNTER };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_GET_PARAM, &rc) == 0 && rc.value == 1);	/* the guilty one */
+
+  /* *V3DReset (cancel_all) still ends everything, innocent or not */
+  s.out_sync = o1;
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &s) == 0);
+  sim_finish (V3D_BIN);
+  s2.out_sync = o2;
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &s2) == 0);
+  CHECK (busy[V3D_BIN] && busy[V3D_RENDER]);
+  v3d_cancel_all (dev);
+  CHECK (!busy[V3D_BIN] && !busy[V3D_RENDER] && dev->stats.requeued == 1);
+  CHECK (syncobj_done (f, o1) && syncobj_done (f, o2) && !dev->head[V3D_RENDER]);
+
+  v3d_close (dev, g);
+  v3d_close (dev, f);
+  teardown ();
+}
+
 static void
 test_v71 (void)
 {
@@ -691,6 +815,7 @@ main (void)
   test_cl_jobs ();
   test_old_struct_csd_reset ();
   test_v71 ();
+  test_013 ();
   test_many ();
   printf ("%d checks, %d failed\n", checks, failures);
   return failures != 0;

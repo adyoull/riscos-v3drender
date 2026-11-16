@@ -74,9 +74,14 @@ class Pi4(Machine):
         self.mailbox = []
         self.time = 1000
         self.risc3d = None
+        self.revision = 0xC03114                # (0.13) a Pi 4B 4GB: processor 3
+        self.bcm = True                         # BCMSupport is there
+        self.touched = 0                        # GPU/PM register accesses
+        self.mem13 = 0                          # devices mapped
 
     # -- the GPU
     def _v3d_read(self, uc, off, size, ud):
+        self.touched += 1
         if off >= 0x11000:
             return self.asb.get(off, 0)
         if off >= 0x4000:
@@ -84,6 +89,7 @@ class Pi4(Machine):
         return self.hub.get(off, 0)
 
     def _v3d_write(self, uc, off, size, value, ud):
+        self.touched += 1
         self.writes.append((off, value))
         if off >= 0x11000:
             v = value & 0xFFFFFF
@@ -112,9 +118,11 @@ class Pi4(Machine):
         self.hub[off] = value
 
     def _pm_read(self, uc, off, size, ud):
+        self.touched += 1
         return self.grafx if off == 0x10C else 0
 
     def _pm_write(self, uc, off, size, value, ud):
+        self.touched += 1
         if off == 0x10C:
             check((value >> 24) == 0x5A, "PM writes carry the password")
             self.grafx = value & 0xFFFFFF
@@ -153,13 +161,15 @@ class Pi4(Machine):
         r = [uc.reg_read(x) for x in REGS[:13]]
         base = number & ~X_BIT
         out = lambda i, v: uc.reg_write(REGS[i], v & 0xFFFFFFFF)
+        if base == 0x591C5 and not self.bcm:      # (0.13) not a Pi
+            return self._fail(number, 0x1E6, "SWI &591C5 not known")
         if base == 0x591C5:                       # BCMSupport_SendTempPropertyBuffer
             req = [self.word(r[0] + 4 * i) for i in range(9)]
             tag, a0, a1 = req[2], req[5], req[6]
             self.mailbox.append(tag)
             resp = list(req)
             if tag == 0x00010002:
-                resp[5] = 0xC03114                # a Pi 4B 4GB: processor 3
+                resp[5] = self.revision
             elif tag in (0x00030002,):
                 resp[6] = 500000000 if getattr(self, "clock_set", 0) else 0
             elif tag == 0x00030004:
@@ -184,6 +194,7 @@ class Pi4(Machine):
         if base == 0x68:                          # OS_Memory
             reason = r[0] & 0xFF
             if reason == 13:
+                self.mem13 += 1
                 out(3, {0xFEC00000: V3D_LOG, 0xFE100000: PM_LOG}[r[1]])
                 return
             if reason == 12:
@@ -374,7 +385,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 12 and out[8] != 0, "version 0.12, statistics in r8")
+    check(out[0] == 13 and out[8] != 0, "version 0.13, statistics in r8")
     stats_addr = out[8]
 
     # RISC3D: registered as a DRM device; its calls open, describe, close
@@ -497,6 +508,19 @@ def main():
     check(ret == 0 and all(x >= GB for x in pas) and pas == [pas[0] + 4096 * i for i in range(256)],
           "a 1 MB BO: above 1 GB, contiguous")
     big_pte = m.word(pt["base"] + (boff >> 12) * 4)
+    check(boff & 0xFFFFF == 0 and pas[0] & 0xFFFFF == 0 and big_pte & (1 << 31),
+          "(0.13) and on a 1 MB GPU address and 1 MB physical: a 1 MB entry (&%08X)" % big_pte)
+    ret, b = ioctl(R["IOCTL_CREATE_BO"], struct.pack("<IIII", 64 * 1024, 0, 0, 0))
+    kh, koff = struct.unpack("<IIII", b)[2], struct.unpack("<IIII", b)[3]
+    kpte = m.word(pt["base"] + (koff >> 12) * 4)
+    check(ret == 0 and koff & 0xFFFF == 0 and kpte & (1 << 30) and not kpte & (1 << 31),
+          "a 64 KB BO: a 64 KB entry (&%08X at &%X)" % (kpte, koff))
+    ret, _ = ioctl(R["IOCTL_GEM_CLOSE"], struct.pack("<II", kh, 0))
+    out, e = mod.swi(5, {0: 2, 1: 0x00777000})      # (0.13) Debug 2: place the next BO
+    ret, b = ioctl(R["IOCTL_CREATE_BO"], struct.pack("<IIII", 66 * 4096, 0, 0, 0))
+    ph, poff = struct.unpack("<IIII", b)[2], struct.unpack("<IIII", b)[3]
+    check(e is None and ret == 0 and poff == 0x00777000, "V3DRender_Debug 2 places a BO (&%X)" % poff)
+    ret, _ = ioctl(R["IOCTL_GEM_CLOSE"], struct.pack("<II", ph, 0))
     m.high_limit = m.high_next + 40                 # room for 40 pages only
     ret, b = ioctl(R["IOCTL_CREATE_BO"], struct.pack("<IIII", 100 * 4096, 0, 0, 0))
     lh, loff = struct.unpack("<IIII", b)[2], struct.unpack("<IIII", b)[3]
@@ -514,7 +538,9 @@ def main():
     check(err is None and used and above
           and int(above.group(1)) + (100 - hi_n) * 4 == int(used.group(1))
           and "below 1 GB (KB):     %d" % ((100 - hi_n) * 4) in m.output
-          and "Page table at:         &%08X (above 1 GB)" % pt_pa in m.output,
+          and "Page table at:         &%08X (above 1 GB)" % pt_pa in m.output
+          and "in 1 MB entries (KB):1024" in m.output and "GPU time (ms):" in m.output
+          and "jobs run again after:0" in m.output,
           "*V3DRender says where the buffers are: %d high\n%s" % (hi_n, m.output))
     for h in (bh, lh):
         ret, _ = ioctl(R["IOCTL_GEM_CLOSE"], struct.pack("<II", h, 0))
@@ -646,6 +672,30 @@ def main():
             mod4.swi(2, {0: out[0]})
         check(ok, "%s: loads, page table below 1 GB, a BO still made" % what)
         mod4.finalise()
+
+    # (0.13) RISC3D's package puts V3DRender on every machine: it must
+    # refuse to start wherever there's no V3D 4.2, touching nothing
+    def refuses(what, setup, errnum, hardware_ok=False):
+        m5 = Pi4()
+        setup(m5)
+        mod5 = Module(m5, data, 0x20010000)
+        t = SCRATCH + 0x1000
+        m5.uc.mem_write(t, b"\0")
+        out, v, _ = m5.call(mod5.base + mod5.init, {10: t, 12: m5.pw})
+        num = m5.word(out[0]) if v else 0
+        ok = v and num == errnum and not m5.areas and m5.vector is None
+        if not hardware_ok:
+            ok = ok and m5.touched == 0 and m5.mem13 == 0 \
+                and all(t == 0x00010002 for t in m5.mailbox)
+        check(ok, "%s: refused with &%X (%s), nothing claimed%s" % (
+            what, num, m5.cstr(out[0] + 4) if v else "no error",
+            "" if hardware_ok else ", no hardware touched"))
+    refuses("a Pi 3B+", lambda m: setattr(m, "revision", 0xA020D3), 0x81D341)
+    refuses("a Pi 1 (old-style revision)", lambda m: setattr(m, "revision", 0x000E), 0x81D341)
+    refuses("not a Pi (no BCMSupport)", lambda m: setattr(m, "bcm", False), 0x81D341)
+    def no_v3d(m):
+        m.hub, m.core = {}, {}
+    refuses("a BCM2711 whose V3D doesn't answer", no_v3d, 0x81D343, hardware_ok=True)
 
 
 try:

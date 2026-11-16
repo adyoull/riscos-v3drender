@@ -79,6 +79,12 @@ sys_ram_mb (void)
 }
 
 int
+sys_place_at (uint32_t gpu)
+{
+  return _swix (0xC3D45, _INR (0, 1), 2, gpu) ? -1 : 0;
+}
+
+int
 sys_pa_width (void)
 {
   unsigned va = 0, pa = 0;

@@ -180,15 +180,33 @@ import_memory (struct v3d_dev *v3d, int f, struct drm_riscos_import_memory *args
   if (h == V3D_MAX_HANDLES)
     return -V3D_ENOMEM;
   v3d_service (v3d);
-  if (args->pad || (uint64_t) (uintptr_t) args->address != args->address)
+  if ((args->flags & ~DRM_RISCOS_IMPORT_UNCACHED)
+      || (uint64_t) (uintptr_t) args->address != args->address)
     return -V3D_EINVAL;
   int bo, ret = v3d_bo_import (v3d, (uintptr_t) args->address, args->size, &bo);
   if (ret)
     return ret;
   v3d->bos[bo].file = (int16_t) f;
+  v3d->bos[bo].nocache = (args->flags & DRM_RISCOS_IMPORT_UNCACHED) != 0;
   handles[h] = (uint16_t) bo;
   args->handle = h;
   args->offset = v3d_bo_offset (v3d, bo);
+  return 0;
+}
+
+/* (0.13) DRM_IOCTL_RISCOS_FILE_STATS */
+static int
+file_stats (struct v3d_dev *v3d, int f, struct drm_riscos_file_stats *args)
+{
+  unsigned s = plat_irq_off ();
+  for (int q = 0; q < V3D_NQ && q < 5; q++)
+    {
+      args->file[q].busy_ns = v3d->files[f].busy_ns[q];
+      args->file[q].jobs = v3d->files[f].done[q];
+      args->all[q].busy_ns = v3d->stats.busy_ns[q];
+      args->all[q].jobs = v3d->stats.jobs[q];
+    }
+  plat_irq_restore (s);
   return 0;
 }
 
@@ -668,7 +686,8 @@ union v3d_args
   struct drm_syncobj_wait syncobj_wait;
   struct drm_syncobj_array syncobj_array;
   struct drm_riscos_sync_file sync_file;
-  uint8_t bytes[128];
+  struct drm_riscos_file_stats file_stats;
+  uint8_t bytes[160];
 };
 
 int
@@ -728,6 +747,7 @@ v3d_ioctl (struct v3d_dev *v3d, int f, uint32_t request, void *arg)
       case 0x00: ret = sync_file (v3d, &a.sync_file, 1); break;
       case 0x01: ret = sync_file (v3d, &a.sync_file, 0); break;
       case 0x02: ret = import_memory (v3d, f, &a.import_memory); break;
+      case 0x03: ret = file_stats (v3d, f, &a.file_stats); break;
       }
   /* (0.11) whatever the request, the file's cached and imported BOs that
      jobs have written are invalidated before it returns: a wait that saw

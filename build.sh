@@ -68,7 +68,7 @@ out/jobhost | grep -E "passed|failed"
 out/jobhost hang | grep -E "passed|failed"
 python3 -B tools/v3ddump.py out/obj/hang.dump > out/obj/hang.txt
 { out/jobhost replay out/obj/hang.dump || true; } | grep -q "16 failed" && echo "replay: ok" || { echo "replay: FAIL"; exit 1; }
-grep -q "Hung: bin job" out/obj/hang.txt && grep -q "Wait on Semaphore" out/obj/hang.txt && grep -q "Set Base: address=0x213000" out/obj/hang.txt \
+grep -q "Hung: bin job" out/obj/hang.txt && grep -q "Wait on Semaphore" out/obj/hang.txt && grep -q "Set Base: address=0x1000" out/obj/hang.txt && grep -q "Tile alloc (qma) 00001000" out/obj/hang.txt \
   && grep -q "Clear Colors\|Tile Rendering Mode Cfg" out/obj/hang.txt && echo "v3ddump: ok" || { echo "v3ddump: FAIL"; exit 1; }
 AC="-std=gnu11 -O2 -mfpu=vfpv3 -mfloat-abi=hard -Wall -Wextra -Werror"
 ${T}gcc $AC -Iinclude -Ikit/src -static -o out/obj/v3djob.elf kit/src/v3djob.c \

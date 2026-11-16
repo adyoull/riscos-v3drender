@@ -108,9 +108,27 @@ struct drm_riscos_sync_file { __s32 fd; __s32 timeout_ms; __u32 signalled, pad; 
 #define DRM_RISCOS_BO_CPU_CACHED 0x80000000u
 /* address: a pointer, 64 bits as Linux's uAPI passes them; offset: the
    GPU address (as CREATE_BO's) */
-struct drm_riscos_import_memory { __u64 address; __u32 size, handle, offset, pad; };
+struct drm_riscos_import_memory { __u64 address; __u32 size, handle, offset, flags; };
 #define DRM_IOCTL_RISCOS_IMPORT_MEMORY \
   _IOC (_IOC_READ | _IOC_WRITE, DRM_RISCOS_BASE, 0x02, sizeof (struct drm_riscos_import_memory))
+/* (0.13) flags (the word was "pad" in 0.11 and 0.12, which refuse anything
+   but 0 with EINVAL, so a program can try the flag and drop it):
+   DRM_RISCOS_IMPORT_UNCACHED: the CPU doesn't cache this memory (screen
+   memory, screen banks), so V3DRender does no cache maintenance for it. */
+#define DRM_RISCOS_IMPORT_UNCACHED 1u
+
+/* (0.13) DRM_IOCTL_RISCOS_FILE_STATS: time on the GPU, as Linux's fdinfo
+   engine statistics. Per queue (V3D_BIN, V3D_RENDER, V3D_TFU, V3D_CSD,
+   V3D_CACHE_CLEAN): the jobs finished and their time from being put on
+   the GPU to finishing (ns), for the calling file and for everyone since
+   V3DRender started. */
+struct drm_riscos_queue_stats { __u64 busy_ns; __u32 jobs, pad; };
+struct drm_riscos_file_stats
+{
+  struct drm_riscos_queue_stats file[5], all[5];
+};
+#define DRM_IOCTL_RISCOS_FILE_STATS \
+  _IOC (_IOC_READ, DRM_RISCOS_BASE, 0x03, sizeof (struct drm_riscos_file_stats))
 
 /* V3DRender's clock for absolute timeouts (drm_syncobj_wait): nanoseconds
    since the machine started, counted as OS_ReadMonotonicTime * 10,000,000.

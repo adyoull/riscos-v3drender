@@ -96,8 +96,8 @@ Both are RISC OS only, in `include/drm/drm.h`.
   uses.
 
 **`DRM_IOCTL_RISCOS_IMPORT_MEMORY`** (`'R'`, nr 2, `struct
-drm_riscos_import_memory { __u64 address; __u32 size, handle, offset, pad;
-}`):
+drm_riscos_import_memory { __u64 address; __u32 size, handle, offset, flags;
+}`; `flags` was `pad` in 0.11 and 0.12):
 
 - Memory the program already has (a sprite, screen memory) becomes a BO.
   `address` and `size` must be multiples of 4 KB. It returns `handle` and
@@ -105,7 +105,16 @@ drm_riscos_import_memory { __u64 address; __u32 size, handle, offset, pad;
 - V3DRender looks up each page's physical address (OS_Memory 65) and maps
   them in the GPU's MMU. Nothing is copied or zeroed.
 - `MMAP_BO` gives back the program's own address.
-- The caches are kept as for a cached BO.
+- The caches are kept as for a cached BO, unless `flags` has
+  **`DRM_RISCOS_IMPORT_UNCACHED`** (1, since 0.13): the CPU doesn't cache
+  this memory (screen memory, screen banks), so V3DRender does no cache
+  maintenance for it. That saves a clean and an invalidate of every line
+  of the frame on every job (8 MB at 1920x1080). Don't set it for memory
+  the CPU caches (a sprite in the program's heap): the CPU would then read
+  stale lines.
+- Other `flags` bits are refused with `EINVAL`. 0.11 and 0.12 refuse any
+  `flags` (as `pad`) with `EINVAL`, so a program can try the flag and,
+  if refused, import again without it.
 - `GEM_CLOSE` takes it out of the GPU's address space once no job uses it.
 - **The memory must stay where it is until then:** the same logical and
   physical pages. It must also be mapped when the program calls V3DRender,
@@ -120,3 +129,38 @@ Mesa's v3d driver makes a render target from a GEM handle
 (`resource_from_handle`, raster with a stride), so an imported sprite or
 the screen can be drawn into directly.
 
+## GPU time (0.13)
+
+**`DRM_IOCTL_RISCOS_FILE_STATS`** (`'R'`, nr 3, read only, `struct
+drm_riscos_file_stats { struct drm_riscos_queue_stats file[5], all[5]; }`,
+each `{ __u64 busy_ns; __u32 jobs, pad; }`), as Linux's fdinfo engine
+statistics:
+
+- Per queue, in v3d_drm.h's order: bin, render, TFU, CSD, cache clean.
+- `file`: the calling file's jobs that finished and their time on the GPU
+  (from being put on it to its interrupt). `all`: everyone's since
+  V3DRender started.
+- The time comes from the ARM's generic timer (54 MHz on a Pi 4). Bin and
+  render jobs of one frame overlap, so their times add up to more than the
+  wall-clock time.
+- `*V3DRender` shows everyone's, in ms.
+
+A program that compares its GPU time with its frame time sees whether it
+is waiting for the GPU or the GPU for it.
+
+## Memory layout (0.13)
+
+As Linux, BOs of 1 MB or more get a 1 MB-aligned GPU address and BOs of
+64 KB or more a 64 KB-aligned one (placed from the top of the area down;
+smaller ones first fit from the bottom), and V3DRender asks for physical runs
+aligned the same way. The GPU's MMU then uses 1 MB and 64 KB entries for
+them (fewer TLB misses on big textures and frames). `*V3DRender` shows how
+much is in each. Nothing changes for programs: `DRM_V3D_PARAM_SUPPORTS_SUPER_PAGES`
+isn't read by Mesa.
+
+## After a hang (0.13)
+
+As Linux (`drm_sched_resubmit_jobs`), only the job that hung is ended as
+failed. Jobs then running on the other queues (for example the next
+frame's bin job while a render job hangs) go back to the front of their
+queues and run again from the start. `*V3DReset` still ends every job.

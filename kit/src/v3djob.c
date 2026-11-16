@@ -484,7 +484,7 @@ test_where (void)
       check (0, "an 8 MB buffer");
       return;
     }
-  unsigned pages = b.size >> 12, high = 0, runs = 0, unread = 0;
+  unsigned pages = b.size >> 12, high = 0, runs = 0, unread = 0, e1m = 0, e64k = 0;
   uint64_t lowest = ~0ull, prev = 0;
   for (unsigned i = 0; i < pages; i++)
     {
@@ -496,6 +496,8 @@ test_where (void)
 	}
       uint64_t pa = (uint64_t) (pte & 0x0FFFFFFFu) << 12;
       high += pa >= 0x40000000u;
+      e1m += pte >> 31 & 1;
+      e64k += pte >> 30 & 1;
       if (pa < lowest)
 	lowest = pa;
       if (!i || pa != prev + 4096)
@@ -506,12 +508,55 @@ test_where (void)
   printf ("    %u pages: %u above 1 GB, %u below, in %u contiguous run%s; lowest &%llX (RAM %u MB)\n",
 	  pages, high, pages - high - unread, runs, runs == 1 ? "" : "s",
 	  (unsigned long long) lowest, ram);
+  printf ("    GPU address &%08X; pages in 1 MB entries %u, in 64 KB entries %u (0.13)\n",
+	  (unsigned) b.gpu, e1m, e64k);
   check (!unread, "every page's entry read (V3DRender_Debug 0)");
   if (ram > 1024 + 64)
-    check (high == pages, "all of it above 1 GB, out of the VideoCore's way");
+    {
+      check (high == pages, "all of it above 1 GB, out of the VideoCore's way");
+      check ((b.gpu & 0xFFFFF) == 0 && e1m == pages,
+	     "on a 1 MB GPU address, all in 1 MB entries (fewer GPU TLB misses)");
+    }
   else
     printf ("    (1 GB of RAM or unknown: nothing to check)\n");
   bo_free (&b);
+}
+
+/* Test 13 (0.13): riscos-mesa's other asks. The GPU time of this
+   program's jobs (DRM_IOCTL_RISCOS_FILE_STATS), and imports marked as
+   memory the CPU doesn't cache (DRM_RISCOS_IMPORT_UNCACHED). */
+static void
+test_stats (void)
+{
+  static const char *const qn[5] = { "bin", "render", "TFU", "compute", "cache clean" };
+  struct drm_riscos_file_stats st;
+  memset (&st, 0, sizeof st);
+  int r = ioctl_ (DRM_IOCTL_RISCOS_FILE_STATS, &st);
+  check (r == 0, "FILE_STATS");
+  if (r)
+    return;
+  for (int q = 0; q < 5; q++)
+    printf ("    %-12s this program %5u jobs, %6u us; everyone %6u jobs, %7u us\n", qn[q],
+	    st.file[q].jobs, (unsigned) (st.file[q].busy_ns / 1000), st.all[q].jobs,
+	    (unsigned) (st.all[q].busy_ns / 1000));
+  check (st.file[V3D_BIN].jobs > 200 && st.file[V3D_RENDER].jobs > 200
+	 && st.file[V3D_TFU].jobs >= 3 && st.file[V3D_CSD].jobs >= 3,
+	 "this program's jobs counted (200+ frames, 3 TFU, 3 compute)");
+  check (st.file[V3D_RENDER].busy_ns > 0 && st.file[V3D_RENDER].busy_ns < 60000000000ull
+	 && st.all[V3D_RENDER].busy_ns >= st.file[V3D_RENDER].busy_ns,
+	 "and their GPU time (within everyone's)");
+
+  static uint8_t mem[3 * 4096];
+  uint8_t *p = (uint8_t *) (((uintptr_t) mem + 4095) & ~(uintptr_t) 4095);
+  struct drm_riscos_import_memory im = { .address = (uintptr_t) p, .size = 4096,
+					 .flags = DRM_RISCOS_IMPORT_UNCACHED };
+  r = ioctl_ (DRM_IOCTL_RISCOS_IMPORT_MEMORY, &im);
+  check (r == 0, "IMPORT_MEMORY with DRM_RISCOS_IMPORT_UNCACHED accepted");
+  struct drm_gem_close c = { .handle = im.handle };
+  if (!r)
+    ioctl_ (DRM_IOCTL_GEM_CLOSE, &c);
+  im.flags = 2;
+  check (ioctl_ (DRM_IOCTL_RISCOS_IMPORT_MEMORY, &im) == -22, "an unknown import flag refused (EINVAL)");
 }
 
 /* Test 6 (kit 3) gave the binner 8 KB for a 1080p frame: it didn't run out
@@ -587,6 +632,41 @@ static uint32_t rd_w[12];
 static struct rbo rbos[64];
 static unsigned nrbos;
 
+/* (0.13) V3DRender places BOs of 64 KB and more at aligned addresses
+   from the top of its area. A dump's BOs were placed first fit, so here
+   each is made of BOs under 64 KB, which still go first fit, one after
+   the other. */
+static struct bo rchunks[1024];
+static unsigned nrchunks;
+
+static int
+bo_new_ff (struct bo *b, uint32_t size)
+{
+  uint32_t done = 0;
+  while (done < size)
+    {
+      uint32_t part = size - done < 15 * 4096 ? size - done : 15 * 4096;
+      struct bo *c = done ? &rchunks[nrchunks] : b;
+      if (done && nrchunks == 1024)
+	return -1;
+      if (bo_new (c, part))
+	return -1;
+      if (done)
+	{
+	  nrchunks++;
+	  if (c->gpu != b->gpu + done)
+	    {
+	      printf ("  a part of a BO went to &%08X, not &%08X\n", (unsigned) c->gpu,
+		      (unsigned) (b->gpu + done));
+	      return -1;
+	    }
+	}
+      done += part;
+    }
+  b->size = size;
+  return 0;
+}
+
 static int
 replay_load (const char *path)
 {
@@ -642,22 +722,38 @@ replay_load (const char *path)
 	  printf ("  BO &%08X wasn't kept in the dump\n", rbos[i].gpu);
 	  return -1;
 	}
-      for (;;)
+      /* (0.13) V3DRender_Debug 2 puts it at its address */
+      if (sys_place_at (rbos[i].gpu) == 0)
 	{
 	  if (bo_new (&rbos[i].bo, rbos[i].size))
 	    return -1;
 	  if (rbos[i].bo.gpu == rbos[i].gpu)
-	    break;
-	  uint32_t got = rbos[i].bo.gpu;
-	  bo_free (&rbos[i].bo);
-	  if (got > rbos[i].gpu || nfill == 64)
-	    {
-	      printf ("  can't place BO &%08X (got &%08X): run Replay just after loading V3DRender\n",
-		      rbos[i].gpu, got);
-	      return -1;
-	    }
-	  if (bo_new (&fill[nfill++], rbos[i].gpu - got))	/* a filler for the gap */
-	    return -1;
+	    continue;
+	  printf ("  can't place BO &%08X (got &%08X): something else is there\n",
+		  rbos[i].gpu, (unsigned) rbos[i].bo.gpu);
+	  return -1;
+	}
+      /* older: where the next first-fit BO goes: a filler up to the BO's address */
+      struct bo probe;
+      if (bo_new (&probe, 4096))
+	return -1;
+      uint32_t got = probe.gpu;
+      bo_free (&probe);
+      if (got > rbos[i].gpu || nfill == 64)
+	{
+	  printf ("  can't place BO &%08X (got &%08X): run Replay just after loading V3DRender\n",
+		  rbos[i].gpu, got);
+	  return -1;
+	}
+      if (got < rbos[i].gpu && bo_new_ff (&fill[nfill++], rbos[i].gpu - got))
+	return -1;
+      if (bo_new_ff (&rbos[i].bo, rbos[i].size))
+	return -1;
+      if (rbos[i].bo.gpu != rbos[i].gpu)
+	{
+	  printf ("  can't place BO &%08X (got &%08X): run Replay just after loading V3DRender\n",
+		  rbos[i].gpu, (unsigned) rbos[i].bo.gpu);
+	  return -1;
 	}
     }
   /* where the BOs' pages are in memory, from the GPU's page table */
@@ -1069,6 +1165,8 @@ main (int argc, char **argv)
       test_cached_frame ("1920x1080, the program's own memory (IMPORT_MEMORY)", 1920, 1080, 2);
       printf ("\n12. Where the GPU's memory is: above 1 GB, out of the VideoCore's way (0.12)\n");
       test_where ();
+      printf ("\n13. GPU time per program, and imports the CPU doesn't cache (0.13)\n");
+      test_stats ();
       printf ("\n7. Through RISC3D\n");
       test_risc3d ();
       uint32_t const *st = stats ();

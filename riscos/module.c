@@ -30,7 +30,7 @@
 #include "v3d_regs.h"
 #include "plat_pi4.h"
 
-#define VERSION 12		/* 0.12 */
+#define VERSION 13		/* 0.13 */
 #define SWI_BASE 0xC3D40
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -259,6 +259,13 @@ mod_swi (unsigned number, regs *r)
 	{
 	  r->r[0] = (unsigned) dev->va_width;
 	  r->r[1] = (unsigned) dev->pa_width;
+	  return 0;
+	}
+      if (r->r[0] == 2)
+	{
+	  /* (0.13) r1 = a GPU address: the next BO made starts there if
+	     that space is free (the kit's replay of a *V3DDump) */
+	  dev->place_at = r->r[1] >> V3D_MMU_PAGE_SHIFT;
 	  return 0;
 	}
       return ERR (err_swi);
@@ -624,7 +631,7 @@ mod_command (int index, const char *tail, int argc)
   line ("Buffer memory (KB):    ", dev->area_pages * 4);
   line ("  in use (KB):         ", dev->pages_used * 4);
   /* (0.12) how much of it is above 1 GB, out of the VideoCore's reach */
-  uint32_t high = 0, low = 0;
+  uint32_t high = 0, low = 0, big = 0, super = 0;
   for (int bo = 1; bo < V3D_MAX_BOS; bo++)
     {
       struct v3d_bo *b = &dev->bos[bo];
@@ -639,10 +646,14 @@ mod_command (int index, const char *tail, int argc)
 	    high++;
 	  else
 	    low++;
+	  super += (pte >> 31) & 1;		/* (0.13) in 1 MB entries */
+	  big += (pte >> 30) & 1;		/* and 64 KB ones */
 	}
     }
   line ("  above 1 GB (KB):     ", high * 4);
   line ("  below 1 GB (KB):     ", low * 4);
+  line ("  in 1 MB entries (KB):", super * 4);
+  line ("  in 64 KB entries (KB):", big * 4);
   uint64_t pt = pi4_pt_pa ();
   write0 ("Page table at:         &");
   if (pt >> 32)
@@ -661,12 +672,23 @@ mod_command (int index, const char *tail, int argc)
   line ("Render jobs:           ", s->jobs[V3D_RENDER]);
   line ("TFU jobs:              ", s->jobs[V3D_TFU]);
   line ("Compute jobs:          ", s->jobs[V3D_CSD]);
+  /* (0.13) time on the GPU, as Linux's fdinfo */
+  write0 ("GPU time (ms):         bin ");
+  write_dec ((uint32_t) (s->busy_ns[V3D_BIN] / 1000000u));
+  write0 (", render ");
+  write_dec ((uint32_t) (s->busy_ns[V3D_RENDER] / 1000000u));
+  write0 (", TFU ");
+  write_dec ((uint32_t) (s->busy_ns[V3D_TFU] / 1000000u));
+  write0 (", compute ");
+  write_dec ((uint32_t) (s->busy_ns[V3D_CSD] / 1000000u));
+  newline ();
   line ("Interrupts:            ", s->irqs);
   line ("  with nothing to do:  ", s->irqs_empty);
   line ("Binner overflows:      ", s->overflows);
   line ("  with no memory left: ", s->overflow_misses);
   line ("Timeouts:              ", s->timeouts);
   line ("Resets:                ", s->resets);
+  line ("  jobs run again after:", s->requeued);
   line ("MMU errors:            ", s->mmu_errors);
   if (s->mmu_errors)
     {

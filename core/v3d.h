@@ -83,6 +83,7 @@ struct v3d_job
   uint32_t dep[V3D_NQ];			/* fences that must be done first */
   uint32_t start_cs, timedout_ctca, timedout_ctra;
   uint32_t first_cs;			/* when the hang check first saw it (0.10) */
+  uint64_t start_ns;			/* (0.13) put on the GPU: for the busy time */
   int file;
   union
   {
@@ -105,6 +106,7 @@ struct v3d_bo
   /* (0.11) cached for the CPU, or memory imported from the program;
      both need cache maintenance around jobs */
   uint8_t cached, imported, stale;	/* stale: invalidate before the file sees it */
+  uint8_t nocache;			/* (0.13) imported memory the CPU doesn't cache */
   int16_t file;				/* the file that made it (-1: V3DRender's) */
   uintptr_t cpu;			/* imported: the program's address */
   uint64_t *pa;				/* imported: each page's physical address */
@@ -119,6 +121,8 @@ struct v3d_file
   uint32_t resets;			/* resets its jobs caused */
   uint32_t nstale;			/* its BOs waiting for a cache invalidate (0.11) */
   uint16_t *handles;			/* handle (from 1) -> BO */
+  uint64_t busy_ns[V3D_NQ];		/* (0.13) its jobs' time on the GPU */
+  uint32_t done[V3D_NQ];		/* and how many finished */
   struct v3d_syncobj *syncobjs;		/* handle (from 1) */
 };
 
@@ -145,6 +149,9 @@ struct v3d_stats
   uint32_t mmu_errors, mmu_last_addr, mmu_last_client, mmu_last_sts;
   uint32_t resets, timeouts, gmp_violations;
   struct v3d_hang first_hang, last_hang;	/* 0.05 */
+  uint32_t requeued;			/* (0.13) innocent jobs run again after a reset */
+  uint32_t pad;
+  uint64_t busy_ns[V3D_NQ];		/* (0.13) time on the GPU, per queue */
 };
 
 struct v3d_dev
@@ -187,6 +194,7 @@ struct v3d_dev
   struct v3d_stats stats;
   int dumped;				/* the first hang's dump is taken */
   int reset_asked;			/* v3d_cancel_all's reset (0.10): for the log */
+  uint32_t place_at;			/* (0.13) the next BO's first page, for the kit's replay (0: none) */
 };
 
 /* Errors are Linux's errno values, negated. */
@@ -258,6 +266,9 @@ int v3d_bo_at (struct v3d_dev *v3d, uint32_t gpu);	/* the BO holding a GPU addre
 void v3d_bo_cpu_clean (struct v3d_dev *v3d, int bo);	/* before a job (0.11) */
 void v3d_file_caches (struct v3d_dev *v3d, int f);	/* invalidates its stale BOs */
 int v3d_page_used (struct v3d_dev *v3d, uint32_t page);
+/* (0.11/0.13) the CPU's caches need looking after for this BO */
+static inline int v3d_bo_cpu_cached (const struct v3d_bo *b)
+{ return b->cached || (b->imported && !b->nocache); }
 void v3d_bo_get (struct v3d_dev *v3d, int bo);
 void v3d_bo_put (struct v3d_dev *v3d, int bo);	/* not with interrupts off */
 int v3d_bo_init (struct v3d_dev *v3d);

@@ -69,6 +69,14 @@ v3d_job_done (struct v3d_dev *v3d, int q, int failed)
     return;
   v3d->active[q] = 0;
   job->failed = (uint8_t) failed;
+  /* (0.13) its time on the GPU, as Linux's v3d_job_update_stats */
+  uint64_t ns = plat_time_ns () - job->start_ns;
+  v3d->stats.busy_ns[q] += ns;
+  if (job->file >= 0 && job->file < V3D_MAX_FILES && v3d->files[job->file].used)
+    {
+      v3d->files[job->file].busy_ns[q] += ns;
+      v3d->files[job->file].done[q]++;
+    }
   /* A render job whose bin job failed isn't run: its tile lists aren't
      there (Linux: the bin fence's error ends the render job unrun). */
   if (failed && q == V3D_BIN && job->a.cl.render)
@@ -98,6 +106,7 @@ v3d_pump (struct v3d_dev *v3d)
 	    v3d->active[q] = job;
 	    job->started = 1;
 	    job->start_cs = 0;		/* v3d_service sets it */
+	    job->start_ns = plat_time_ns ();
 	    plat_barrier ();
 	    v3d_run_job (v3d, job);
 	    progress = 1;
@@ -106,7 +115,15 @@ v3d_pump (struct v3d_dev *v3d)
 	     && deps_done (v3d, v3d->head[V3D_CACHE_CLEAN]))
 	{
 	  struct v3d_job *job = pop (v3d, V3D_CACHE_CLEAN);
+	  uint64_t t0 = plat_time_ns ();
 	  v3d_clean_caches (v3d);
+	  uint64_t ns = plat_time_ns () - t0;
+	  v3d->stats.busy_ns[V3D_CACHE_CLEAN] += ns;
+	  if (job->file >= 0 && job->file < V3D_MAX_FILES && v3d->files[job->file].used)
+	    {
+	      v3d->files[job->file].busy_ns[V3D_CACHE_CLEAN] += ns;
+	      v3d->files[job->file].done[V3D_CACHE_CLEAN]++;
+	    }
 	  retire (v3d, job);
 	  progress = 1;
 	}
@@ -161,7 +178,7 @@ release_job (struct v3d_dev *v3d, struct v3d_job *job)
       /* (0.11) the CPU's copy of a cached or imported BO is invalidated
 	 before its file next sees it (v3d_file_caches, in its context) */
       struct v3d_bo *b = &v3d->bos[job->bos[i]];
-      if ((b->cached || b->imported) && !b->stale && b->file >= 0
+      if (v3d_bo_cpu_cached (b) && !b->stale && b->file >= 0
 	  && v3d->files[b->file].used)
 	{
 	  b->stale = 1;
@@ -190,10 +207,12 @@ release_job (struct v3d_dev *v3d, struct v3d_job *job)
   plat_irq_restore (s);
 }
 
-/* A hang: Linux's v3d_gpu_reset_for_timeout. The jobs on the hardware
-   are ended as failed (Linux resubmits the innocent ones; here every
-   job then running is ended, and the client sees its fences signalled
-   with the work lost, as for a guilty job). */
+/* A hang: Linux's v3d_gpu_reset_for_timeout. The guilty job (the one
+   that hung) is ended as failed. Since 0.13 the innocent ones, on the
+   other queues, go back to the front of their queues and run again
+   (Linux: drm_sched_resubmit_jobs): a render job's hang no longer loses
+   the next frame's bin job too. A reset asked for (v3d_cancel_all) ends
+   every job, as before. */
 void
 v3d_gpu_reset_now (struct v3d_dev *v3d)
 {
@@ -213,6 +232,18 @@ v3d_gpu_reset_now (struct v3d_dev *v3d)
 	if (job->guilty && job->file >= 0 && job->file < V3D_MAX_FILES
 	    && v3d->files[job->file].used)
 	  v3d->files[job->file].resets++;
+	if (!job->guilty && !v3d->reset_asked)
+	  {
+	    v3d->active[q] = 0;		/* innocent: again, from the start */
+	    job->started = 0;
+	    job->start_cs = job->first_cs = 0;
+	    job->next = v3d->head[q];
+	    v3d->head[q] = job;
+	    if (!v3d->tail[q])
+	      v3d->tail[q] = job;
+	    v3d->stats.requeued++;
+	    continue;
+	  }
 	v3d_job_done (v3d, q, 1);
       }
   v3d_pump (v3d);

@@ -48,6 +48,8 @@ void plat_cache_inval (const void *p, uint32_t n) { (void) p; (void) n; cache_in
 void plat_pages_release (struct v3d_dev *v, uint32_t f, uint32_t n) { (void) v; (void) f; (void) n; }
 void plat_gpu_reset (struct v3d_dev *v) { (void) v; resets++; hung = 0; csd_hung = 0; memset (busy, 0, sizeof busy); }
 uint32_t plat_time_cs (void) { return time_cs; }
+static uint64_t ns_ticks;
+uint64_t plat_time_ns (void) { return (uint64_t) time_cs * 10000000u + (ns_ticks += 1000); }
 void plat_barrier (void) { }
 unsigned plat_irq_off (void) { return 0; }
 void plat_irq_restore (unsigned s) { (void) s; }
@@ -301,6 +303,7 @@ const char *sys_risc3d_open (int *c, int *f) { (void) c; (void) f; return "no"; 
 void sys_risc3d_close (int c) { (void) c; }
 
 uint32_t sys_pte (uint32_t gpu) { return dev->pt[gpu >> 12]; }
+int sys_place_at (uint32_t gpu) { dev->place_at = gpu >> 12; return 0; }
 int sys_reset (int all) { (void) all; v3d_cancel_all (dev); return 0; }
 int sys_pa_width (void) { return dev->pa_width; }
 unsigned sys_ram_mb (void) { return 4096; }

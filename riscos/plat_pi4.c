@@ -498,7 +498,17 @@ plat_pages_claim (struct v3d_dev *v3d, uint32_t first, uint32_t n, int cached)
     {
       if (run > n - done)
 	run = n - done;
-      uint32_t page = high_run (run, 12);
+      /* (0.13) physically aligned as the GPU address is, so the GPU's MMU
+	 can use 1 MB and 64 KB entries (the core aligns big BOs' GPU
+	 addresses); else any 4 KB run */
+      uint32_t at = first + done, align = 12;
+      if (run >= 256 && !(at & 255))
+	align = 20;
+      else if (run >= 16 && !(at & 15))
+	align = 16;
+      uint32_t page = high_run (run, align);
+      if (page == DA_RELEASE && align > 12)
+	page = high_run (run, 12);
       if (page == DA_RELEASE
 	  || pmp_claim_map (&pi4.bo, first + done, run, page, ap))
 	{
@@ -620,6 +630,27 @@ plat_time_cs (void)
   regs r = {{ 0 }};
   swix_regs (OS_ReadMonotonicTime, &r);
   return r.r[0];
+}
+
+/* (0.13) the ARM's generic timer (CNTVCT; 54 MHz on a Pi 4, from the
+   firmware's CNTFRQ), readable with interrupts off and in the interrupt
+   handler; centiseconds if CNTFRQ was never set */
+uint64_t
+plat_time_ns (void)
+{
+  static uint32_t freq;
+  if (!freq)
+    {
+      uint32_t f;
+      __asm__ volatile ("mrc p15, 0, %0, c14, c0, 0" : "=r" (f));
+      freq = f ? f : ~0u;
+    }
+  if (freq == ~0u)
+    return (uint64_t) plat_time_cs () * 10000000u;
+  uint32_t lo, hi;
+  __asm__ volatile ("isb\n\tmrrc p15, 1, %0, %1, c14" : "=r" (lo), "=r" (hi));
+  uint64_t t = (uint64_t) hi << 32 | lo;
+  return t / freq * 1000000000u + t % freq * 1000000000u / freq;
 }
 
 void

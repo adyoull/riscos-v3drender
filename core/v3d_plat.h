@@ -28,6 +28,7 @@ uint64_t plat_page_pa (struct v3d_dev *v3d, uint32_t page);	/* after claim */
 void plat_gpu_reset (struct v3d_dev *v3d);
 
 uint32_t plat_time_cs (void);		/* a monotonic centisecond clock */
+uint64_t plat_time_ns (void);		/* (0.13) a finer one, for busy times; interrupts off too */
 void plat_barrier (void);		/* the CPU's writes are in memory */
 unsigned plat_irq_off (void);
 void plat_irq_restore (unsigned state);
