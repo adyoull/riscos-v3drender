@@ -14,6 +14,8 @@ RISC OS 5:
 - The kit's own jobs: cleared 1080p frames at 540 a second, the TFU
   (texture formatting), compute on every QPU, the GPU's MMU, its
   interrupt, and the reset after a hang.
+- Buffers of 64 KB and 1 MB or more in the GPU MMU's big entries, as
+  Linux; GPU time per program; a hang ends only the job that hung.
 - Frames read back by the CPU at about 2.6 to 3.9 GB/s from cached
   buffers or the program's own memory (151 MB/s from ordinary buffers).
 - It works alongside ReelHWAccel: Reel decodes on the VideoCore while
