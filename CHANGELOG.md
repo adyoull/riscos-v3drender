@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14: clean and invalidate after jobs; the ARM's clock; kit 16 (16 November 2026)
+
+- **Cache maintenance after a job is now clean and invalidate (DCCIMVAC), not invalidate (DCIMVAC).** riscos-mesa asked whether a cached screen imported without `DRM_RISCOS_IMPORT_UNCACHED` is safe. It wasn't quite: while the GPU draws, other tasks can write elsewhere on that screen through the cache, and an invalidate would throw away those writes if they were still in the cache. Clean and invalidate keeps them; lines the GPU wrote are clean since the submit, so they are only invalidated, as before. The same applies to cached BOs and imported sprites. Costs the same per line.
+- **`*V3DRender` shows the ARM's clock** and the firmware's most for it, since frame rates on one core depend on it (Linux on a Pi 4 usually runs at 1.8 GHz).
+- **Kit 16:** test 11 also times the CPU writing each kind of frame memory (memset, 10 times over 1080p): Mesa writes its vertex data, uniforms and lists into ordinary BOs with the CPU.
+- Tests: emulator 43627 (version 0.14; the module has DCCIMVAC and no DCIMVAC; the ARM clock line).
+
 ## 0.13: riscos-mesa's four requests; refusing to start, tested (16 November 2026)
 
 riscos-mesa compared V3DRender with Linux's v3d (`MESA/handoffs/2026-11-16-mesa-v3drender-linux-comparison.md`) and asked for four things, in order of value. RISC3D asked that V3DRender refuse to start where there's no V3D, before it goes in RISC3D's one package for every machine.

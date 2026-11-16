@@ -30,7 +30,7 @@
 #include "v3d_regs.h"
 #include "plat_pi4.h"
 
-#define VERSION 13		/* 0.13 */
+#define VERSION 14		/* 0.14 */
 #define SWI_BASE 0xC3D40
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -628,6 +628,16 @@ mod_command (int index, const char *tail, int argc)
   uint32_t hz = 0;
   pi4_clock (&hz, 0);
   line ("Clock (MHz):           ", hz / 1000000);
+  uint32_t arm = 0, arm_max = 0;
+  if (!pi4_arm_clock (&arm, &arm_max))
+    {
+      write0 ("ARM clock (MHz):       ");
+      write_dec (arm / 1000000);
+      write0 (" (the firmware's most: ");
+      write_dec (arm_max / 1000000);
+      write0 (")");
+      newline ();
+    }
   line ("Buffer memory (KB):    ", dev->area_pages * 4);
   line ("  in use (KB):         ", dev->pages_used * 4);
   /* (0.12) how much of it is above 1 GB, out of the VideoCore's reach */

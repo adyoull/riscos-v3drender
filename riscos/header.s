@@ -28,7 +28,7 @@ module_start:
 	.word	flags - module_start
 
 title:	.asciz	"V3DRender"
-help:	.asciz	"V3DRender\t0.13 (16 Nov 2026) Pi 4 GPU driver (V3D 4.2), after Linux's v3d"
+help:	.asciz	"V3DRender\t0.14 (16 Nov 2026) Pi 4 GPU driver (V3D 4.2), after Linux's v3d"
 swi_names:
 	.asciz	"V3DRender\0Info\0Open\0Close\0Ioctl\0Reset\0Debug\0"
 	.align	2
@@ -139,7 +139,7 @@ cache_inval_range:
 	dsb	sy
 1:	cmp	r0, r1
 	bhs	2f
-	mcr	p15, 0, r0, c7, c6, 1		@ DCIMVAC
+	mcr	p15, 0, r0, c7, c14, 1		@ DCCIMVAC (0.14; 0.11-0.13: DCIMVAC)
 	add	r0, r0, r3
 	b	1b
 2:	dsb	sy

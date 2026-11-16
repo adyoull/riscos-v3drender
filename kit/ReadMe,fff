@@ -1,3 +1,19 @@
+V3DRender 0.14: kit 16
+======================
+
+A small one: after a GPU job, the CPU's cache is now cleaned and
+invalidated (not just invalidated), which is safe for a cached screen
+that other programs draw on meanwhile. And two measurements, to find
+where games lose time compared with Linux:
+
+  - *V3DRender shows the ARM's clock and the firmware's most for it.
+    Linux on a Pi 4 usually runs it at 1.8 GHz.
+  - Check's test 11 also shows how fast the CPU writes to each kind of
+    frame memory ("the CPU wrote the frame 10 times..."). Mesa writes
+    all its vertex data and lists into the ordinary (uncached) kind.
+
+Please send Results (from Check) and *V3DRender's output.
+
 V3DRender 0.13: kit 15
 ======================
 

@@ -385,7 +385,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 13 and out[8] != 0, "version 0.13, statistics in r8")
+    check(out[0] == 14 and out[8] != 0, "version 0.14, statistics in r8")
     stats_addr = out[8]
 
     # RISC3D: registered as a DRM device; its calls open, describe, close
@@ -540,7 +540,8 @@ def main():
           and "below 1 GB (KB):     %d" % ((100 - hi_n) * 4) in m.output
           and "Page table at:         &%08X (above 1 GB)" % pt_pa in m.output
           and "in 1 MB entries (KB):1024" in m.output and "GPU time (ms):" in m.output
-          and "jobs run again after:0" in m.output,
+          and "jobs run again after:0" in m.output
+          and "ARM clock (MHz):" in m.output,
           "*V3DRender says where the buffers are: %d high\n%s" % (hi_n, m.output))
     for h in (bh, lh):
         ret, _ = ioctl(R["IOCTL_GEM_CLOSE"], struct.pack("<II", h, 0))
@@ -672,6 +673,13 @@ def main():
             mod4.swi(2, {0: out[0]})
         check(ok, "%s: loads, page table below 1 GB, a BO still made" % what)
         mod4.finalise()
+
+    # (0.14) after a job, imported and cached BOs are cleaned and
+    # invalidated (DCCIMVAC), never just invalidated (DCIMVAC): the CPU
+    # may have written elsewhere in a cached screen meanwhile
+    words = struct.unpack("<%dI" % (len(data) // 4), data[:len(data) // 4 * 4])
+    check(0xEE070F3E in words and 0xEE070F36 not in words,
+          "cache maintenance after jobs is clean+invalidate, not invalidate")
 
     # (0.13) RISC3D's package puts V3DRender on every machine: it must
     # refuse to start wherever there's no V3D 4.2, touching nothing

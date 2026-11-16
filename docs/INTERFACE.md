@@ -89,8 +89,8 @@ Both are RISC OS only, in `include/drm/drm.h`.
 - The BO is mapped cacheable (write-back) for the CPU.
 - V3DRender cleans its lines from the CPU's caches when a job that lists
   it is submitted.
-- After such a job, it invalidates them before the file's next request
-  returns. So once a wait has seen the job finish, the CPU reads what the
+- After such a job, it cleans and invalidates them (0.11-0.13: invalidated
+  only) before the file's next request returns. So once a wait has seen the job finish, the CPU reads what the
   GPU wrote.
 - Put the BO in the job's `bo_handles`, as Mesa does for every BO a job
   uses.

@@ -137,6 +137,17 @@ pi4_clock (uint32_t *hz, uint32_t *max_hz)
   return e;
 }
 
+/* (0.14) the ARM's clock, for *V3DRender: frame rates depend on it */
+oserror *
+pi4_arm_clock (uint32_t *hz, uint32_t *max_hz)
+{
+  uint32_t echo;
+  oserror *e = mailbox (TAG_GET_CLOCK_RATE, 3, 0, 0, &echo, hz);
+  if (!e && max_hz)
+    e = mailbox (TAG_GET_MAX_CLOCK_RATE, 3, 0, 0, &echo, max_hz);
+  return e;
+}
+
 /* hz 0: the firmware's maximum. Only with no job running. */
 oserror *
 pi4_set_clock (uint32_t hz, uint32_t *now)
@@ -548,6 +559,11 @@ plat_cache_clean (const void *p, uint32_t bytes)
   cache_clean_range (p, (const char *) p + bytes);
 }
 
+/* (0.14) clean and invalidate, not just invalidate: memory imported from
+   the program may be written by the CPU elsewhere while the GPU works
+   (a cached screen: other tasks redraw their windows). Invalidating would
+   throw those writes away; cleaning lines the GPU wrote changes nothing,
+   as they are clean since the submit. */
 void
 plat_cache_inval (const void *p, uint32_t bytes)
 {

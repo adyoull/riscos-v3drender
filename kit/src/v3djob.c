@@ -426,6 +426,18 @@ read_all (struct frame *f, unsigned *cs)
   return sum;
 }
 
+/* (0.14) Mesa writes its vertex data, uniforms and lists into BOs with
+   the CPU: how fast does it write to each kind of memory? memset (STM
+   bursts, as memcpy) 10 times over the frame. */
+static void
+write_all (struct frame *f, unsigned *cs)
+{
+  unsigned t0 = now_cs ();
+  for (int rep = 0; rep < 10; rep++)
+    memset (f->target.cpu + 4096, rep, f->j.width * f->j.height * 4);
+  *cs = now_cs () - t0;
+}
+
 static void
 test_cached_frame (const char *what, uint32_t w, uint32_t h, int mode)
 {
@@ -452,8 +464,14 @@ test_cached_frame (const char *what, uint32_t w, uint32_t h, int mode)
       free (mem);
       return;
     }
-  fill (&f, 0xDEADBEEF);
   unsigned cs;
+  write_all (&f, &cs);
+  uint32_t wmb = w * h * 4 * 10 / 1048576;
+  if (cs)
+    printf ("    the CPU wrote the frame 10 times in %u cs: %u MB/s (0.14)\n", cs, wmb * 100 / cs);
+  else
+    printf ("    the CPU wrote the frame 10 times in under 1 cs\n");
+  fill (&f, 0xDEADBEEF);
   read_all (&f, &cs);			/* the old contents into the cache */
   r = frame_submit (&f, 0xFF336699);
   check (r == 0 && wait_sync (200) == 0, what);

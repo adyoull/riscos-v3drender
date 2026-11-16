@@ -95,7 +95,7 @@ struct drm_riscos_sync_file { __s32 fd; __s32 timeout_ms; __u32 signalled, pad; 
    - DRM_RISCOS_BO_CPU_CACHED in drm_v3d_create_bo.flags: the BO is
      mapped cacheable for the CPU. V3DRender cleans its lines from the
      CPU's caches when a job using it is submitted, and invalidates them
-     after the job, before the file's next request returns (so after the
+     after the job (0.14: cleans and invalidates), before the file's next request returns (so after the
      wait that saw it finish).
    - DRM_IOCTL_RISCOS_IMPORT_MEMORY: memory the program already has (a
      sprite, screen memory), page-aligned, becomes a BO in the GPU's
