@@ -35,6 +35,7 @@ oserror *swix_regs (unsigned swi, regs *r);
 #define OS_DynamicArea		0x66
 #define OS_File			0x08
 #define OS_ReadVarVal		0x23
+#define OS_MMUControl 0x6B
 #define OS_Hardware		0x7A
 #define OS_ConvertHex8		0xD4
 #define OS_ConvertCardinal4	0xD8

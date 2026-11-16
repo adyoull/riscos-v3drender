@@ -245,26 +245,53 @@ v3d_bo_cpu_clean (struct v3d_dev *v3d, int bo)
 {
   struct v3d_bo *b = &v3d->bos[bo];
   if (v3d_bo_cpu_cached (b))
-    plat_cache_clean (v3d_bo_cpu (v3d, bo), b->npages * V3D_PAGE);
+    {
+      uint64_t t0 = plat_time_ns ();
+      plat_cache_clean (v3d_bo_cpu (v3d, bo), b->npages * V3D_PAGE);
+      v3d->stats.cache_ns += plat_time_ns () - t0;
+      v3d->stats.cache_cleans++;
+    }
 }
 
+/* (0.15) a job that will write it again is still queued or running */
+static int
+bo_gpu_busy (struct v3d_dev *v3d, const struct v3d_bo *b)
+{
+  for (int q = 0; q < V3D_NQ; q++)
+    if (b->last[q] && !v3d_fence_done (v3d, (struct v3d_fence) { (uint32_t) q, b->last[q] }))
+      return 1;
+  return 0;
+}
+
+/* Stale BOs are invalidated once their last job is done: the CPU can't
+   be reading them before then (it waits first, and the wait's request
+   ends here), and each invalidate of a big BO costs real time (0.15:
+   YSFlight's 9 jobs a frame invalidated its whole frame 9 times). */
 void
 v3d_file_caches (struct v3d_dev *v3d, int f)
 {
   struct v3d_file *file = &v3d->files[f];
   if (!file->nstale)
     return;
-  for (int h = 1; h < V3D_MAX_HANDLES && file->nstale; h++)
+  uint32_t left = 0;
+  uint64_t t0 = plat_time_ns ();
+  for (int h = 1; h < V3D_MAX_HANDLES; h++)
     {
       int bo = file->handles[h];
-      if (bo && v3d->bos[bo].stale)
+      if (!bo || !v3d->bos[bo].stale)
+	continue;
+      if (bo_gpu_busy (v3d, &v3d->bos[bo]))
 	{
-	  plat_cache_inval (v3d_bo_cpu (v3d, bo), v3d->bos[bo].npages * V3D_PAGE);
-	  v3d->bos[bo].stale = 0;
-	  file->nstale--;
+	  left++;
+	  v3d->stats.cache_deferred++;
+	  continue;
 	}
+      plat_cache_inval (v3d_bo_cpu (v3d, bo), v3d->bos[bo].npages * V3D_PAGE);
+      v3d->bos[bo].stale = 0;
+      v3d->stats.cache_invals++;
     }
-  file->nstale = 0;			/* (any left were closed) */
+  v3d->stats.cache_ns += plat_time_ns () - t0;
+  file->nstale = left;			/* (closed ones aren't counted) */
 }
 
 void

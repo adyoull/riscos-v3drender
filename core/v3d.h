@@ -152,6 +152,10 @@ struct v3d_stats
   uint32_t requeued;			/* (0.13) innocent jobs run again after a reset */
   uint32_t pad;
   uint64_t busy_ns[V3D_NQ];		/* (0.13) time on the GPU, per queue */
+  uint64_t cache_ns;			/* (0.15) CPU time in cache maintenance */
+  uint32_t cache_cleans, cache_invals;	/* and how many BOs, each way */
+  uint32_t cache_deferred;		/* invalidates put off: more jobs to come */
+  uint32_t pad2;
 };
 
 struct v3d_dev

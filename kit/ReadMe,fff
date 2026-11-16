@@ -1,3 +1,16 @@
+V3DRender 0.15: kit 17
+======================
+
+YSFlight's log showed it spent most of each frame in V3DRender's cache
+work for its window's picture (the GPU itself was busy for only about
+7% of the time). 0.15 does that work for big buffers by cleaning the
+whole cache at once with the kernel's own routines, and only once per
+frame instead of after every job.
+
+Please run Check and send Results, then fly YSFlight again with
+*Set V3DM$Stats 1 and send the YSFlightLog, and *V3DRender's output
+afterwards (it now has a "Cache maintenance" line).
+
 V3DRender 0.14: kit 16
 ======================
 

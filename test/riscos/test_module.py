@@ -30,6 +30,7 @@ R = json.load(open(sys.argv[2]))
 V3D_LOG = 0x60000000            # where OS_Memory 13 maps the V3D
 PM_LOG = 0x61000000
 HAL_CLEAR = RETURN + 0x100      # a HAL routine: counts, returns
+ARMOP = RETURN + 0x200          # (0.15) the kernel's ARMops 0, 1 and 3 (8 bytes each)
 IRQ_STACK = 0x31000000
 AREA_BASE = 0x80000000          # dynamic areas are given out from here
 GB = 0x40000000                 # physical page number = address >> 12, as on a Pi
@@ -60,6 +61,12 @@ class Pi4(Machine):
         uc.mmio_map(PM_LOG, 0x1000, self._pm_read, None, self._pm_write, None)
         uc.mem_write(HAL_CLEAR, struct.pack("<I", 0xE12FFF1E))     # BX lr
         self.hal_clears = 0
+        # ARMop 0 Cache_CleanInvalidateAll, 1 Cache_CleanAll: BX lr, counted;
+        # 3 Cache_RangeThreshold: MOV r0, #&100000 (1 MB); BX lr
+        uc.mem_write(ARMOP, struct.pack("<IIIIII", 0xE12FFF1E, 0, 0xE12FFF1E, 0,
+                                        0, 0) + struct.pack("<II", 0xE3A00601, 0xE12FFF1E))
+        self.armop_calls = [0, 0]
+        uc.hook_add(1 << 2, self._armop, begin=ARMOP, end=ARMOP + 8)
         uc.hook_add(1 << 2, self._code, begin=HAL_CLEAR, end=HAL_CLEAR)  # UC_HOOK_CODE
         uc.mem_map(IRQ_STACK, 0x10000)
         self.saved = None
@@ -130,6 +137,9 @@ class Pi4(Machine):
     def _code(self, uc, address, size, ud):
         self.hal_clears += 1
 
+    def _armop(self, uc, address, size, ud):
+        self.armop_calls[(address - ARMOP) // 8] += 1
+
     def finish(self, bit):
         """the GPU finishes: the status bit, then the interrupt"""
         self.core[R["CTL_INT_STS"]] = self.core.get(R["CTL_INT_STS"], 0) | bit
@@ -188,6 +198,12 @@ class Pi4(Machine):
                 resp[6] = a1
             for i, v in enumerate(resp):
                 self.set_word(r[1] + 4 * i, v)
+            return
+        if base == 0x6B and (r[0] & 0xFF) == 2:   # (0.15) OS_MMUControl 2: ARMops
+            i = (r[0] >> 8) & 0xFF
+            if i not in (0, 1, 3) or not getattr(self, "armops", True):
+                return self._fail(number, 0x1E6, "ARMop %d" % i)
+            out(0, ARMOP + 8 * i)
             return
         if base == 0x1E and r[0] == 18:           # OS_Module lookup: nothing loaded
             return self._fail(number, 0x102, "Module '%s' not found" % self.cstr(r[1]))
@@ -385,7 +401,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 14 and out[8] != 0, "version 0.14, statistics in r8")
+    check(out[0] == 15 and out[8] != 0, "version 0.15, statistics in r8")
     stats_addr = out[8]
 
     # RISC3D: registered as a DRM device; its calls open, describe, close
@@ -500,6 +516,22 @@ def main():
         ret, _ = ioctl(R["IOCTL_GEM_CLOSE"], struct.pack("<II", h, 0))
         check(ret == 0, "GEM_CLOSE %d" % h)
     check(not m.word(pt["base"] + (ioff >> 12) * 4) & (1 << 28), "the import is out of the MMU")
+    check(m.armop_calls == [0, 0], "small BOs: by address, not the whole cache")
+
+    # (0.15) a 1 MB cached BO: the kernel's whole-cache ARMops instead
+    ret, b = ioctl(R["IOCTL_CREATE_BO"], struct.pack("<IIII", 1 << 20, 0x80000000, 0, 0))
+    wh = struct.unpack("<IIII", b)[2]
+    m.uc.mem_write(hlist, struct.pack("<I", wh))
+    cl = struct.pack("<9I4xQ4IQ", 0x1000, 0x1040, 0x2000, 0x2040, 0, 0, sync,
+                     0x3000, 0x8000, hlist, 1, 0, 0, 0, 0)
+    ret, _ = ioctl(R["IOCTL_SUBMIT_CL"], cl)
+    check(ret == 0 and m.armop_calls == [0, 2],
+          "a 1 MB cached BO: Cache_CleanAll for its zeroes and at submit %s" % m.armop_calls)
+    m.finish(R["INT_FLDONE"])
+    m.finish(R["INT_FRDONE"])
+    check(wait(0) == 0 and m.armop_calls == [1, 2],
+          "and Cache_CleanInvalidateAll after the job %s" % m.armop_calls)
+    ret, _ = ioctl(R["IOCTL_GEM_CLOSE"], struct.pack("<II", wh, 0))
 
     # (0.12) a 1 MB BO above 1 GB; then with nothing left there, the kernel's pages
     ret, b = ioctl(R["IOCTL_CREATE_BO"], struct.pack("<IIII", 1 << 20, 0, 0, 0))
@@ -541,7 +573,8 @@ def main():
           and "Page table at:         &%08X (above 1 GB)" % pt_pa in m.output
           and "in 1 MB entries (KB):1024" in m.output and "GPU time (ms):" in m.output
           and "jobs run again after:0" in m.output
-          and "ARM clock (MHz):" in m.output,
+          and "ARM clock (MHz):" in m.output
+          and "whole cache 3 times (from 1024 KB)" in m.output,
           "*V3DRender says where the buffers are: %d high\n%s" % (hi_n, m.output))
     for h in (bh, lh):
         ret, _ = ioctl(R["IOCTL_GEM_CLOSE"], struct.pack("<II", h, 0))
@@ -550,9 +583,9 @@ def main():
 
     m.output = ""
     err = mod.command("V3DRender")
-    check(err is None and "Render jobs:           2" in m.output, "*V3DRender")
-    check(m.word(stats_addr + 4 * 1) == 2 and m.word(stats_addr + 4 * 5) == 4,
-          "the statistics block: 2 render jobs, 4 interrupts")
+    check(err is None and "Render jobs:           3" in m.output, "*V3DRender")
+    check(m.word(stats_addr + 4 * 1) == 3 and m.word(stats_addr + 4 * 5) == 6,
+          "the statistics block: 3 render jobs, 6 interrupts")
     print("  " + m.output.replace("\n", "\n  ").rstrip())
 
     check(getattr(m, "domain_sets", None) == [1], "the firmware's V3D domain turned on at load (0.08)")

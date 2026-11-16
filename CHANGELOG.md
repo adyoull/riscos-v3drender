@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.15: cache work that no longer costs YSFlight its frames (16 November 2026)
+
+YSFlight's log with `V3DM$Stats` (owner, MesaLibs gpu7, V3DRender 0.13/0.14) showed where its frames went. In each 5 s:
+
+- the GPU was busy for about 350 ms (bin about 12 ms, render about 340 ms, for about 140 jobs);
+- but `SUBMIT_CL` took 2.5–3.2 s (about 20 ms each), and `WAIT_BO` 1.3–2.2 s (about 2000 calls).
+
+So about 4.5 s of every 5 s were spent inside V3DRender, and nearly all of it was cache maintenance. YSFlight draws into an imported, cached colour buffer (its window's sprite). That buffer is in every one of its roughly 9 jobs a frame, and was cleaned by address at each submit and invalidated by address after each job. A big window is hundreds of thousands of cache lines each time, and each line costs a trip through L2.
+
+- **The whole data cache, above the kernel's threshold:** `plat_cache_clean` and `plat_cache_inval` now use the kernel's own ARMops (OS_MMUControl 2): `Cache_CleanAll` and `Cache_CleanInvalidateAll`. They are used when the range is at least the kernel's `Cache_RangeThreshold` (1 MB if it gives none), working by set/way through the Pi 4's L1 and L2 (about 17,000 lines) instead of line by line. Smaller ranges stay by address. Without OS_MMUControl 2 (before RISC OS 5.23), it's line by line as before.
+- **An invalidate waits for the BO's last job:** a stale BO that another queued or running job will write again isn't invalidated yet. That happens once that job is done, at the file's next request. YSFlight's 9 invalidates a frame become about 1. The CPU can't be reading it meanwhile, because it waits for the job first, and the wait's request does the invalidate.
+- **`*V3DRender`** shows the cache work: BOs cleaned and invalidated, invalidates put off, CPU time spent, and how many times the whole cache was done (and from what size).
+- **Statistics block** (appended): `cache_ns`, `cache_cleans`, `cache_invals`, `cache_deferred`.
+- **Tests:** sim 2012 checks (a cached BO in two queued jobs: cleaned twice, the invalidate put off until the second finishes, then once). Emulator 44411 (the kernel's ARMops stubbed: by address under 1 MB; a 1 MB cached BO cleaned with Cache_CleanAll, at create and at submit, and Cache_CleanInvalidateAll after the job; the status line). Mutations caught.
+- **Kit 17:** as kit 16. Test 11's 8 MB cached and imported frames now go through the whole-cache path, and still check every pixel and guard.
+
 ## 0.14: clean and invalidate after jobs; the ARM's clock; kit 16 (16 November 2026)
 
 - **Cache maintenance after a job is now clean and invalidate (DCCIMVAC), not invalidate (DCIMVAC).** riscos-mesa asked whether a cached screen imported without `DRM_RISCOS_IMPORT_UNCACHED` is safe. It wasn't quite: while the GPU draws, other tasks can write elsewhere on that screen through the cache, and an invalidate would throw away those writes if they were still in the cache. Clean and invalidate keeps them; lines the GPU wrote are clean since the submit, so they are only invalidated, as before. The same applies to cached BOs and imported sprites. Costs the same per line.

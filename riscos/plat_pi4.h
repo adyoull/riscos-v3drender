@@ -24,6 +24,9 @@ extern int pi4_no_wfi;
 extern uint32_t pi4_area_mb;	/* the BO area asked for (0.09) */
 uint64_t pi4_pt_pa (void);
 oserror *pi4_arm_clock (uint32_t *hz, uint32_t *max_hz);
+void pi4_cache_init (void);		/* (0.15) the kernel's whole-cache ARMops */
+uint32_t pi4_cache_threshold (void);	/* 0: line by line only */
+extern uint32_t pi4_cache_whole;
 
 #define PI4_LOG 8
 struct pi4_log { const char *msg; uint32_t value; };

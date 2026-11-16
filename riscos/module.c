@@ -30,7 +30,7 @@
 #include "v3d_regs.h"
 #include "plat_pi4.h"
 
-#define VERSION 14		/* 0.14 */
+#define VERSION 15		/* 0.15 */
 #define SWI_BASE 0xC3D40
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -410,6 +410,7 @@ mod_init (const char *tail, int instance, void *pw)
       dev = 0;
       return ERR (err_nogpu);
     }
+  pi4_cache_init ();
   e = pi4_memory (dev);
   if (e)
     goto fail;
@@ -699,6 +700,21 @@ mod_command (int index, const char *tail, int argc)
   line ("Timeouts:              ", s->timeouts);
   line ("Resets:                ", s->resets);
   line ("  jobs run again after:", s->requeued);
+  /* (0.15) the CPU's cache work for cached and imported BOs */
+  write0 ("Cache maintenance:     ");
+  write_dec (s->cache_cleans);
+  write0 (" cleans, ");
+  write_dec (s->cache_invals);
+  write0 (" invalidates (");
+  write_dec (s->cache_deferred);
+  write0 (" put off), ");
+  write_dec ((uint32_t) (s->cache_ns / 1000000u));
+  write0 (" ms; whole cache ");
+  write_dec (pi4_cache_whole);
+  write0 (" times (from ");
+  write_dec (pi4_cache_threshold () / 1024);
+  write0 (" KB)");
+  newline ();
   line ("MMU errors:            ", s->mmu_errors);
   if (s->mmu_errors)
     {

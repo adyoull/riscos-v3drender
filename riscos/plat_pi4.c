@@ -553,9 +553,58 @@ plat_virt_pa (uintptr_t va)
 void cache_clean_range (const void *start, const void *end);
 void cache_inval_range (const void *start, const void *end);
 
+/* (0.15) Above the kernel's own threshold (its Cache_RangeThreshold
+   ARMop), the whole data cache is cleaned (and invalidated) by set/way
+   with the kernel's ARMops instead of line by line: a 1080p frame is
+   131,072 lines, against about 17,000 in the Pi 4's L1 and L2. YSFlight
+   spent most of each frame here (0.14). Older RISC OS (no OS_MMUControl
+   2): line by line, as before. */
+typedef void armop_fn (void);
+static armop_fn *armop_clean_all, *armop_clean_inval_all;
+static uint32_t cache_threshold;
+uint32_t pi4_cache_whole;		/* times the whole cache was done */
+
+static armop_fn *
+armop (unsigned index)
+{
+  regs r = {{ 2u | index << 8 }};
+  if (swix_regs (OS_MMUControl, &r))
+    return 0;
+  return (armop_fn *) r.r[0];
+}
+
+void
+pi4_cache_init (void)
+{
+  armop_fn *threshold = armop (3);
+  armop_clean_all = armop (1);
+  armop_clean_inval_all = armop (0);
+  if (!threshold || !armop_clean_all || !armop_clean_inval_all)
+    {
+      armop_clean_all = armop_clean_inval_all = 0;
+      return;
+    }
+  uint32_t (*get) (void) = (uint32_t (*) (void)) threshold;
+  cache_threshold = get ();
+  if (!cache_threshold || cache_threshold > (16u << 20))
+    cache_threshold = 1u << 20;
+}
+
+uint32_t
+pi4_cache_threshold (void)
+{
+  return armop_clean_all ? cache_threshold : 0;
+}
+
 void
 plat_cache_clean (const void *p, uint32_t bytes)
 {
+  if (armop_clean_all && bytes >= cache_threshold)
+    {
+      armop_clean_all ();
+      pi4_cache_whole++;
+      return;
+    }
   cache_clean_range (p, (const char *) p + bytes);
 }
 
@@ -567,6 +616,12 @@ plat_cache_clean (const void *p, uint32_t bytes)
 void
 plat_cache_inval (const void *p, uint32_t bytes)
 {
+  if (armop_clean_inval_all && bytes >= cache_threshold)
+    {
+      armop_clean_inval_all ();
+      pi4_cache_whole++;
+      return;
+    }
   cache_inval_range (p, (const char *) p + bytes);
 }
 

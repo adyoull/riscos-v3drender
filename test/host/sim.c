@@ -742,6 +742,38 @@ test_013 (void)
   teardown ();
 }
 
+/* (0.15) a cached BO used by two jobs: invalidated once, after the last */
+static void
+test_015 (void)
+{
+  setup (42);
+  CHECK (v3d_hw_probe (dev) == 0 && v3d_init (dev) == 0);
+  int f = v3d_open (dev, 1);
+  struct drm_v3d_create_bo cc = { .size = 8192, .flags = DRM_RISCOS_BO_CPU_CACHED };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_CREATE_BO, &cc) == 0);
+  int bo = dev->files[f].handles[cc.handle];
+  uint32_t o1 = syncobj (f, 0), o2 = syncobj (f, 0);
+  struct drm_v3d_submit_cl k = { .rcl_start = 0x10, .rcl_end = 0x20, .out_sync = o1,
+				 .bo_handles = (uintptr_t) &cc.handle, .bo_handle_count = 1 };
+  unsigned cl0 = cache_cleans, in0 = cache_invals;
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &k) == 0);
+  k.out_sync = o2;
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &k) == 0);	/* queued behind */
+  CHECK (cache_cleans == cl0 + 2 && dev->stats.cache_cleans == 2);
+  sim_finish (V3D_RENDER);				/* the first: the second starts */
+  CHECK (syncobj_done (f, o1) && !syncobj_done (f, o2));
+  CHECK (cache_invals == in0 && dev->bos[bo].stale && dev->files[f].nstale == 1
+	 && dev->stats.cache_deferred >= 1);		/* put off */
+  sim_finish (V3D_RENDER);
+  CHECK (syncobj_done (f, o2));
+  CHECK (cache_invals == in0 + 1 && !dev->bos[bo].stale && dev->files[f].nstale == 0
+	 && dev->stats.cache_invals == 1 && dev->stats.cache_ns > 0);
+  struct drm_v3d_get_param gp = { .param = DRM_V3D_PARAM_SUPPORTS_TFU };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_GET_PARAM, &gp) == 0 && cache_invals == in0 + 1);
+  v3d_close (dev, f);
+  teardown ();
+}
+
 static void
 test_v71 (void)
 {
@@ -816,6 +848,7 @@ main (void)
   test_old_struct_csd_reset ();
   test_v71 ();
   test_013 ();
+  test_015 ();
   test_many ();
   printf ("%d checks, %d failed\n", checks, failures);
   return failures != 0;
