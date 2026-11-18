@@ -34,8 +34,8 @@ and its test tools.
 
 V3DRender comes inside RISC3D (`!RISC3D.GPU`), which loads it at start-up.
 On its own: RISC OS 5.30 or later on a Pi 4, Pi 400 or CM4, with Rob
-Heaton's V3DDriver not loaded. `*RMLoad V3DRender` before RISC3D (0.03 or
-later), which then lists it as the machine's GPU driver. The test kit
+Heaton's V3DDriver not loaded. `*RMLoad V3DRender` before RISC3D (0.05,
+with the allocated numbers; 0.03 and 0.04 work too), which then lists it as the machine's GPU driver. The test kit
 (V3DRenderTest) checks a machine: run Check and read Results.
 
 ## How it fits

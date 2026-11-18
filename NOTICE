@@ -78,8 +78,8 @@ Material from other projects
    broadcom/common/v3d_tiling.c's pixel-offset functions (MIT, Copyright
    (C) 2014-2017 Broadcom), for 4-byte pixels.
 
-6. kit/RISC3D,ffa: RISC3D's module 0.03 (MIT licence, Copyright (c) 2026
-   Andrew Youll), built unchanged from RISC3D's repository (762a716) for
+6. kit/RISC3D,ffa: RISC3D's module 0.05 (MIT licence, Copyright (c) 2026
+   Andrew Youll), built unchanged from RISC3D's repository (204bca7) for
    the test kit.
 
 7. common/ (the C module framework) and test/riscos/emu.py: MIT licence,

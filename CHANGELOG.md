@@ -11,6 +11,7 @@ RISC OS Open allocated V3DRender's numbers. This is the only change.
 - Programs are unaffected: they take the ioctl SWI from `RISC3D_Info` r5.
 - **Kit 18:** V3DJob calls V3DRender's and RISC3D's SWIs by name, so it works with old and new chunks of either. Test 7 checks the ioctl SWI RISC3D reports is `V3DRender_Ioctl`'s number, whatever it is. BASIC V3DCheck already used names.
 - **Tests:** emulator 44412 (the module's chunk word; registration through the name; new error numbers in the refusal tests).
+- **Kit 19** (same module): the kit's RISC3D is now 0.05, the one with the allocated numbers (&5AF80; built unchanged from RISC3D's 204bca7), and Check needs RISC3D 0.05. RISC3D asked for this (`2026-11-18-risc3d-allocated-chunk-5AFC0-register-5AF81.md`): RISC3D 0.05 answers only its new numbers. V3DRender 0.16 already registers at &5AF81 through the name.
 
 ## 0.15: cache work that no longer costs YSFlight its frames (16 November 2026)
 
