@@ -1,3 +1,13 @@
+V3DRender 0.16: kit 18
+======================
+
+RISC OS Open has allocated V3DRender's SWI chunk (&5AFC0) and error
+block (&823E00); 0.16 uses them. Nothing else changes. V3DJob now finds
+V3DRender's and RISC3D's SWIs by name, so it works with RISC3D in its
+old or new chunk.
+
+Please run Check (and, if you like, Replay) and send Results.
+
 V3DRender 0.15: kit 17
 ======================
 

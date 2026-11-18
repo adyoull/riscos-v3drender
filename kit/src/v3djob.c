@@ -597,7 +597,7 @@ test_risc3d (void)
   printf ("    RISC3D's driver: %s; flags %u, ioctl SWI &%X, DRM driver %s\n",
 	  name ? name : "(none)", flags, ioctl_swi, drm ? drm : "(none)");
   check (name && strstr (name, "V3DRender"), "RISC3D lists V3DRender");
-  check ((flags & 1) && ioctl_swi == 0xC3D43 && drm && !strcmp (drm, "v3d"),
+  check ((flags & 1) && ioctl_swi == sys_ioctl_swi () && drm && !strcmp (drm, "v3d"),
 	 "as a DRM device: V3DRender_Ioctl, \"v3d\"");
   check (!(flags & 2), "drawing on a GPU, not in software");
   int ctx, rfile;

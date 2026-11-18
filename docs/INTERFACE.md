@@ -68,6 +68,11 @@ own tools and test kits (V3DCheck, V3DJob, Replay) and for RISC3D.
 
 RISC3D (0.02) lists V3DRender as a driver of the "DRM device" kind
 (`RISC3D_Register` r4 bit 0, r5 = `V3DRender_Ioctl`, r6 -> "v3d").
+Since 0.16, V3DRender's SWIs are in the allocated chunk &5AFC0
+(`V3DRender_Ioctl` = &5AFC3), and it finds `RISC3D_Register` by name, so it
+registers with RISC3D in either its provisional (&C3D00) or allocated
+(&5AF80) chunk. Programs never see the change: they take the ioctl SWI
+from `RISC3D_Info` r5.
 Mesa's EGL can then:
 
 1. `RISC3D_Info`: r3 non-zero, r4 bit 0 set: the driver is a DRM device,

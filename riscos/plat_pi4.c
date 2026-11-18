@@ -189,8 +189,8 @@ pi4_v3d_is_up (void)
   return (REG (0x4000 + V3D_CTL_IDENT0) & 0x00FFFFFFu) == 0x00443356u;
 }
 
-ERROR_BLOCK (err_gate, 0x81D347, "A V3D bus gate didn't stop, so the GPU isn't being reset: restart the computer");
-ERROR_BLOCK (err_open, 0x81D348, "The V3D's bus gates didn't open: restart the computer");
+ERROR_BLOCK (err_gate, 0x823E07, "A V3D bus gate didn't stop, so the GPU isn't being reset: restart the computer");
+ERROR_BLOCK (err_open, 0x823E08, "The V3D's bus gates didn't open: restart the computer");
 
 /* Stop the ASB bus gates, slave then master, before the reset is
    asserted (as Linux's bcm2835_asb_power_off). Resetting a running V3D
@@ -639,7 +639,7 @@ plat_page_pa (struct v3d_dev *v3d, uint32_t page)
   return pmp_pa (&pi4.bo, page);
 }
 
-ERROR_BLOCK (err_pt, 0x81D349, "There isn't 4 MB of contiguous memory for the GPU's page table");
+ERROR_BLOCK (err_pt, 0x823E09, "There isn't 4 MB of contiguous memory for the GPU's page table");
 
 /* The BO area (0.09): pi4_area_mb (the Size load option or
    V3DRender$Size, 256 MB if neither), halved down to 16 MB while the

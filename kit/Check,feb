@@ -1,10 +1,10 @@
-| Check: loads V3DRender 0.15 from this folder (replacing an older one)
+| Check: loads V3DRender 0.16 from this folder (replacing an older one)
 | and then RISC3D 0.03 (if an older RISC3D or none is loaded), runs
 | V3DCheck (buffers, no GPU work), then V3DJob (the GPU's jobs). Both
 | write to Results here.
 Set V3DCheck$Dir <Obey$Dir>
-RMEnsure V3DRender 0.15 RMLoad <Obey$Dir>.V3DRender
-RMEnsure V3DRender 0.15 Error V3DRender 0.15 didn't load
+RMEnsure V3DRender 0.16 RMLoad <Obey$Dir>.V3DRender
+RMEnsure V3DRender 0.16 Error V3DRender 0.16 didn't load
 RMEnsure RISC3D 0.03 RMLoad <Obey$Dir>.RISC3D
 Run <Obey$Dir>.V3DCheck
 WimpSlot -min 24000K -max 24000K

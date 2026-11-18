@@ -2,8 +2,8 @@
 @ driver drives it. Mesa's v3d driver, in the program, sends it work
 @ through V3DRender_Ioctl; RISC3D lists it as a 3D driver.
 @
-@ PROVISIONAL: the SWI chunk (&C3D40) and the error block (&81D340) are
-@ not allocated yet.
+@ SWI chunk &5AFC0 and error block &823E00, allocated by RISC OS Open
+@ (18 November 2026; 0.15 and before used provisional &C3D40 and &81D340).
 @
 @ SPDX-License-Identifier: GPL-2.0-or-later
 @ Copyright (c) 2026 Andrew Youll
@@ -20,7 +20,7 @@ module_start:
 	.word	title - module_start
 	.word	help - module_start
 	.word	commands - module_start
-	.word	0xC3D40				@ SWI chunk (provisional)
+	.word	0x5AFC0				@ SWI chunk (allocated)
 	.word	cm_swi - module_start
 	.word	swi_names - module_start
 	.word	0				@ SWI decoding code
@@ -28,7 +28,7 @@ module_start:
 	.word	flags - module_start
 
 title:	.asciz	"V3DRender"
-help:	.asciz	"V3DRender\t0.15 (16 Nov 2026) Pi 4 GPU driver (V3D 4.2), after Linux's v3d"
+help:	.asciz	"V3DRender\t0.16 (18 Nov 2026) Pi 4 GPU driver (V3D 4.2), after Linux's v3d"
 swi_names:
 	.asciz	"V3DRender\0Info\0Open\0Close\0Ioctl\0Reset\0Debug\0"
 	.align	2
@@ -158,7 +158,7 @@ pmp_handler:
 	msr	APSR_nzcvq, #0x10000000
 	mov	pc, lr
 pmp_error:
-	.word	0x81D34A
+	.word	0x823E0A
 	.asciz	"V3DRender's memory can't be resized"
 	.align	2
 

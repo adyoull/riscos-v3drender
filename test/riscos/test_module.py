@@ -81,6 +81,8 @@ class Pi4(Machine):
         self.mailbox = []
         self.time = 1000
         self.risc3d = None
+        self.risc3d_swi = 0x5AF81               # (0.16) RISC3D_Register, allocated chunk
+        self.swi_lookups = []
         self.revision = 0xC03114                # (0.13) a Pi 4B 4GB: processor 3
         self.bcm = True                         # BCMSupport is there
         self.touched = 0                        # GPU/PM register accesses
@@ -282,7 +284,14 @@ class Pi4(Machine):
             check(self.vector == (r[1], r[2]), "the same vector is released")
             self.vector = None
             return
-        if base == 0xC3D01:                       # RISC3D_Register (a stand-in RISC3D)
+        if base == 0x39:                          # (0.16) OS_SWINumberFromString
+            name = self.cstr(r[1])
+            self.swi_lookups.append(name)
+            if name == "RISC3D_Register" and self.risc3d_swi:
+                out(0, self.risc3d_swi)
+                return
+            return self._fail(number, 0x1E4, "SWI name not known")
+        if self.risc3d_swi and base == self.risc3d_swi:   # RISC3D_Register (a stand-in RISC3D)
             if r[0] == 0:
                 self.risc3d = dict(entry=r[1], r12=r[2], name=self.cstr(r[3]),
                                    flags=r[4], ioctl=r[5], drm=self.cstr(r[6]))
@@ -401,12 +410,14 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 15 and out[8] != 0, "version 0.15, statistics in r8")
+    check(out[0] == 16 and out[8] != 0, "version 0.16, statistics in r8")
+    check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
     # RISC3D: registered as a DRM device; its calls open, describe, close
     d = m.risc3d
-    check(d is not None and d["flags"] == 1 and d["ioctl"] == 0xC3D43 and d["drm"] == "v3d",
+    check(d is not None and d["flags"] == 1 and d["ioctl"] == 0x5AFC3 and d["drm"] == "v3d"
+          and "RISC3D_Register" in m.swi_lookups,
           "registered with RISC3D as a DRM device (%s)" % d)
     if d:
         o, v, _ = m.call(d["entry"], {0: 0, 12: d["r12"]})
@@ -731,12 +742,12 @@ def main():
         check(ok, "%s: refused with &%X (%s), nothing claimed%s" % (
             what, num, m5.cstr(out[0] + 4) if v else "no error",
             "" if hardware_ok else ", no hardware touched"))
-    refuses("a Pi 3B+", lambda m: setattr(m, "revision", 0xA020D3), 0x81D341)
-    refuses("a Pi 1 (old-style revision)", lambda m: setattr(m, "revision", 0x000E), 0x81D341)
-    refuses("not a Pi (no BCMSupport)", lambda m: setattr(m, "bcm", False), 0x81D341)
+    refuses("a Pi 3B+", lambda m: setattr(m, "revision", 0xA020D3), 0x823E01)
+    refuses("a Pi 1 (old-style revision)", lambda m: setattr(m, "revision", 0x000E), 0x823E01)
+    refuses("not a Pi (no BCMSupport)", lambda m: setattr(m, "bcm", False), 0x823E01)
     def no_v3d(m):
         m.hub, m.core = {}, {}
-    refuses("a BCM2711 whose V3D doesn't answer", no_v3d, 0x81D343, hardware_ok=True)
+    refuses("a BCM2711 whose V3D doesn't answer", no_v3d, 0x823E03, hardware_ok=True)
 
 
 try:

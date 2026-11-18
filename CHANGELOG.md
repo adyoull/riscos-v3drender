@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.16: allocated SWI chunk and error block (18 November 2026)
+
+RISC OS Open allocated V3DRender's numbers. This is the only change.
+
+- **SWI chunk &5AFC0** (was the provisional &C3D40): `V3DRender_Info` &5AFC0, `_Open` &5AFC1, `_Close` &5AFC2, `_Ioctl` &5AFC3, `_Reset` &5AFC4, `_Debug` &5AFC5. The names are unchanged.
+- **Error block &823E00** (was &81D340): each error keeps its offset (&823E00 "Not a V3DRender file" … &823E0A).
+- **RISC3D_Register is found by name** (OS_SWINumberFromString). RISC3D's own chunk moves from the provisional &C3D00 to its allocated &5AF80, and V3DRender registers with either. The number it registered with is kept for deregistering.
+- Reserved names (module, `*V3DRender`, `*V3DClock`, `*V3DDump`, `*V3DPower`, `*V3DReset`) are the ones V3DRender already uses.
+- Programs are unaffected: they take the ioctl SWI from `RISC3D_Info` r5.
+- **Kit 18:** V3DJob calls V3DRender's and RISC3D's SWIs by name, so it works with old and new chunks of either. Test 7 checks the ioctl SWI RISC3D reports is `V3DRender_Ioctl`'s number, whatever it is. BASIC V3DCheck already used names.
+- **Tests:** emulator 44412 (the module's chunk word; registration through the name; new error numbers in the refusal tests).
+
 ## 0.15: cache work that no longer costs YSFlight its frames (16 November 2026)
 
 YSFlight's log with `V3DM$Stats` (owner, MesaLibs gpu7, V3DRender 0.13/0.14) showed where its frames went. In each 5 s:

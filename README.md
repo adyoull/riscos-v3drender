@@ -6,7 +6,7 @@ runs in the program and sends its work to V3DRender, as it sends it to
 Linux's v3d driver through a DRM device. RISC3D lists V3DRender as the
 machine's 3D driver.
 
-**Version 0.15, 16 November 2026.** Tested on a Raspberry Pi 4 under native
+**Version 0.16, 18 November 2026.** Tested on a Raspberry Pi 4 under native
 RISC OS 5:
 
 - Mesa's v3d driver (Mesa 26.1.6, through riscos-mesa) draws with it:
@@ -23,7 +23,8 @@ RISC OS 5:
 - It works alongside ReelHWAccel: Reel decodes on the VideoCore while
   V3DRender is loaded, because V3DRender keeps its memory above 1 GB.
 
-The SWI chunk (&C3D40) and error block (&81D340) are provisional.
+The SWI chunk (&5AFC0) and error block (&823E00) are allocated by RISC OS
+Open (since 0.16; earlier versions used provisional &C3D40 and &81D340).
 
 **Programs never call V3DRender themselves: they reach it through RISC3D**
 (see [`docs/INTERFACE.md`](docs/INTERFACE.md)). Its own SWIs are for RISC3D
@@ -128,12 +129,12 @@ structures and the libdrm layer.
 
 | SWI | In | Out |
 |---|---|---|
-| `V3DRender_Info` (&C3D40) | | r0 = version * 100, r1 = V3D version (42), r2 = HUB_IDENT1, r3 = clock (Hz), r4 = buffer memory, r5 = in use, r6 = files open, r7 -> "v3d", r8 -> statistics |
-| `V3DRender_Open` (&C3D41) | r0 = flags (0) | r0 = file |
-| `V3DRender_Close` (&C3D42) | r0 = file | |
-| `V3DRender_Ioctl` (&C3D43) | r0 = file, r1 = request (Linux's number), r2 -> structure | r0 = 0 or -errno |
-| `V3DRender_Reset` (&C3D44) | r0 bit 0: also close every file | |
-| `V3DRender_Debug` (&C3D45) | r0 = 0, r1 = GPU address; r0 = 1; or r0 = 2, r1 = GPU address | r0 = page table entry; r0, r1 = the MMU's address widths; or (2, 0.13) the next BO starts at r1 if free (the kit's replay) |
+| `V3DRender_Info` (&5AFC0) | | r0 = version * 100, r1 = V3D version (42), r2 = HUB_IDENT1, r3 = clock (Hz), r4 = buffer memory, r5 = in use, r6 = files open, r7 -> "v3d", r8 -> statistics |
+| `V3DRender_Open` (&5AFC1) | r0 = flags (0) | r0 = file |
+| `V3DRender_Close` (&5AFC2) | r0 = file | |
+| `V3DRender_Ioctl` (&5AFC3) | r0 = file, r1 = request (Linux's number), r2 -> structure | r0 = 0 or -errno |
+| `V3DRender_Reset` (&5AFC4) | r0 bit 0: also close every file | |
+| `V3DRender_Debug` (&5AFC5) | r0 = 0, r1 = GPU address; r0 = 1; or r0 = 2, r1 = GPU address | r0 = page table entry; r0, r1 = the MMU's address widths; or (2, 0.13) the next BO starts at r1 if free (the kit's replay) |
 
 `*V3DRender` shows the GPU and what it has done; `*V3DClock [MHz]`;
 `*V3DPower [cycle]`; `*V3DDump <file>`; `*V3DReset [all]`.
@@ -151,7 +152,7 @@ flag maps a BO cacheable for the CPU, and `DRM_IOCTL_RISCOS_IMPORT_MEMORY`
 lets the GPU draw into the program's own memory (a sprite, the screen).
 V3DRender does the cache maintenance either way. See docs/INTERFACE.md. On its own, V3DRender
 resets the GPU when a job makes no progress for half a second (as Linux),
-and since 0.10 also when one has run for 5 seconds, even if it still moves. `V3DRender_Debug` (&C3D45) reads
+and since 0.10 also when one has run for 5 seconds, even if it still moves. `V3DRender_Debug` (&5AFC5) reads
 the GPU's page table (r0 = 0, r1 = GPU address) and the MMU's widths
 (r0 = 1).
 

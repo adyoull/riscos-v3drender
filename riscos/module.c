@@ -1,6 +1,6 @@
 /* module.c: V3DRender, the RISC OS module.
 
-   SWIs (chunk &C3D40, PROVISIONAL):
+   SWIs (chunk &5AFC0, allocated 18 Nov 2026; 0.15 and before: &C3D40):
      V3DRender_Info   -> r0 = version * 100, r1 = V3D version (42),
 			 r2 = HUB_IDENT1, r3 = clock (Hz), r4 = buffer
 			 memory (bytes), r5 = of which in use, r6 = files
@@ -30,12 +30,12 @@
 #include "v3d_regs.h"
 #include "plat_pi4.h"
 
-#define VERSION 15		/* 0.15 */
-#define SWI_BASE 0xC3D40
+#define VERSION 16		/* 0.16 */
+#define SWI_BASE 0x5AFC0
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
 #define Wimp_ReadSysInfo	0x400F2
-#define RISC3D_Register		0xC3D01		/* provisional */
+#define OS_SWINumberFromString	0x39
 #define IRQ_DEVICE 10				/* iDev_GPU_VC3D */
 #define HAL_IRQEnable 1
 #define HAL_IRQDisable 2
@@ -54,13 +54,13 @@ static int vector_claimed, registered, mapped_up, clock_raised;
 static uint32_t clock_before;
 
 ERROR_BLOCK (err_swi, 0x1E6, "SWI value out of range for module V3DRender");
-ERROR_BLOCK (err_file, 0x81D340, "Not a V3DRender file");
-ERROR_BLOCK (err_notpi4, 0x81D341, "V3DRender needs a Raspberry Pi 4, Pi 400 or Compute Module 4");
-ERROR_BLOCK (err_v3ddriver, 0x81D342, "V3DDriver is loaded: V3DRender can't share the GPU with it (*RMKill V3DDriver first)");
-ERROR_BLOCK (err_nogpu, 0x81D343, "The GPU didn't answer as a V3D 4.2");
-ERROR_BLOCK (err_files, 0x81D344, "Too many V3DRender files are open");
-ERROR_BLOCK (err_mem, 0x81D345, "Not enough memory for V3DRender");
-ERROR_BLOCK (err_sync, 0x81D346, "V3DRender takes its work through V3DRender_Ioctl, not RISC3D_Sync");
+ERROR_BLOCK (err_file, 0x823E00, "Not a V3DRender file");
+ERROR_BLOCK (err_notpi4, 0x823E01, "V3DRender needs a Raspberry Pi 4, Pi 400 or Compute Module 4");
+ERROR_BLOCK (err_v3ddriver, 0x823E02, "V3DDriver is loaded: V3DRender can't share the GPU with it (*RMKill V3DDriver first)");
+ERROR_BLOCK (err_nogpu, 0x823E03, "The GPU didn't answer as a V3D 4.2");
+ERROR_BLOCK (err_files, 0x823E04, "Too many V3DRender files are open");
+ERROR_BLOCK (err_mem, 0x823E05, "Not enough memory for V3DRender");
+ERROR_BLOCK (err_sync, 0x823E06, "V3DRender takes its work through V3DRender_Ioctl, not RISC3D_Sync");
 
 static unsigned
 this_task (void)
@@ -87,14 +87,23 @@ irq_c (void)
 
 /* ---- RISC3D ---- */
 
+/* (0.16) RISC3D_Register is found by name: RISC3D's chunk moved from
+   the provisional &C3D00 to its allocated &5AF80, and either RISC3D may
+   be loaded. The number used to register is kept for deregistering. */
+static unsigned risc3d_register;
+
 static void
 register_risc3d (void)
 {
   if (registered)
     return;
+  regs n = {{ 0, (unsigned) "RISC3D_Register" }};
+  if (swix_regs (OS_SWINumberFromString, &n))
+    return;				/* RISC3D isn't loaded */
+  risc3d_register = n.r[0];
   regs r = {{ 0, (unsigned) driver_entry, 0, (unsigned) "V3DRender (the Pi 4's GPU)",
 	      1, SWI_BASE + 3, (unsigned) "v3d" }};
-  registered = !swix_regs (RISC3D_Register, &r);
+  registered = !swix_regs (risc3d_register, &r);
 }
 
 static void
@@ -103,7 +112,7 @@ deregister_risc3d (void)
   if (!registered)
     return;
   regs r = {{ 1, (unsigned) driver_entry, 0 }};
-  swix_regs (RISC3D_Register, &r);
+  swix_regs (risc3d_register, &r);
   registered = 0;
 }
 
