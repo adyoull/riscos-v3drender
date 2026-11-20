@@ -218,6 +218,49 @@ v3d_bo_import (struct v3d_dev *v3d, uintptr_t cpu, uint32_t bytes, int *bo_out)
   return 0;
 }
 
+/* (0.17) Memory the OS doesn't page (the display's framestore): `bytes`
+   from physical address `pa`, both page aligned, mapped for the GPU only
+   (no CPU address, never cached by V3DRender). Placed as other BOs of its
+   size are (aligned when big), so a 1 MB-aligned framestore gets 1 MB
+   entries. */
+int
+v3d_bo_import_phys (struct v3d_dev *v3d, uint64_t pa, uint32_t bytes, int *bo_out)
+{
+  if (bytes == 0 || (pa & (V3D_PAGE - 1)) || (bytes & (V3D_PAGE - 1)))
+    return -V3D_EINVAL;
+  uint32_t n = bytes / V3D_PAGE, first;
+  if (n >= v3d->area_pages)
+    return -V3D_ENOMEM;
+  uint64_t *pas = plat_alloc (n * sizeof *pas);
+  if (!pas)
+    return -V3D_ENOMEM;
+  for (uint32_t i = 0; i < n; i++)
+    pas[i] = pa + (uint64_t) i * V3D_PAGE;
+  int bo;
+  for (bo = 1; bo < V3D_MAX_BOS && v3d->bos[bo].used; bo++)
+    ;
+  if (bo == V3D_MAX_BOS || !find_pages_aligned (v3d, n, &first))
+    {
+      plat_free (pas);
+      return -V3D_ENOMEM;
+    }
+  mark (v3d, first, n, 1);
+  struct v3d_bo *b = &v3d->bos[bo];
+  memset (b, 0, sizeof *b);
+  b->used = 1;
+  b->first = first;
+  b->npages = n;
+  b->refs = 1;
+  b->imported = 1;
+  b->nocache = 1;
+  b->file = -1;
+  b->cpu = 0;
+  b->pa = pas;
+  v3d_mmu_insert_ptes (v3d, bo);
+  *bo_out = bo;
+  return 0;
+}
+
 uint64_t
 v3d_bo_page_pa (struct v3d_dev *v3d, int bo, uint32_t i)
 {

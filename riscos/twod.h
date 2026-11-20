@@ -1,0 +1,44 @@
+/* twod.h: GraphicsV for the desktop's rectangle copies (0.17) */
+#ifndef TWOD_H
+#define TWOD_H
+
+#include <stdint.h>
+
+#define TWOD_OFF	0
+#define TWOD_ON		1		/* each copy waited for */
+#define TWOD_ASYNC	2		/* left running until GraphicsV asks */
+
+/* why the screen can't be used */
+#define TWOD_NO_VDU		1
+#define TWOD_DEPTH		2		/* not 16 or 32bpp */
+#define TWOD_GEOMETRY		3
+#define TWOD_NO_FRAMESTORE	4		/* GraphicsV 9 unanswered */
+#define TWOD_BANK		5		/* VDU and display banks differ */
+#define TWOD_NO_MAP		6
+#define TWOD_CACHED		7		/* the CPU caches the screen */
+
+struct twod_state
+{
+  int mode, async, claimed_vector, busy;
+  void *pw;
+  int screen_ok, screen_why;
+  uint32_t log2bpp, stride, xlim, ylim, base_off;
+  int vrender_known;
+  uint32_t vrender, cache_suspended;
+  uint32_t offered, claimed, scrolls, small, irqs_off, disabled, no_screen, errors, last_error;
+  int fills;				/* fills too (*V3DRender 2D fills on|off) */
+  uint32_t stopped;			/* turned off by a GPU failure */
+  uint32_t fills_offered, fills_claimed, fills_small, fills_pattern;
+};
+extern struct twod_state twod;
+
+struct v3d_dev;
+void twod_init (struct v3d_dev *dev, void *pw);
+oserror *twod_set (int mode);
+void twod_final (void);
+void twod_mode_changing (void);
+void twod_mode_changed (void);
+void twod_files_closed (void);
+int gfxv_c (uint32_t *r);
+
+#endif

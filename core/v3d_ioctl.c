@@ -306,7 +306,7 @@ lookup_bos (struct v3d_dev *v3d, int f, struct v3d_job *job,
     return 0;
   if (count > V3D_MAX_JOB_BOS)
     return -V3D_EINVAL;
-  job->bos = plat_alloc (count * sizeof *job->bos);
+  job->bos = count <= V3D_JOB_FEW_BOS ? job->few : plat_alloc (count * sizeof *job->bos);
   if (!job->bos)
     return -V3D_ENOMEM;
   for (uint32_t i = 0; i < count; i++)
@@ -357,7 +357,8 @@ free_unsubmitted (struct v3d_dev *v3d, struct v3d_job *job)
     return;
   for (uint32_t i = 0; i < job->nbos; i++)
     v3d_bo_put (v3d, job->bos[i]);
-  plat_free (job->bos);
+  if (job->bos != job->few)
+    plat_free (job->bos);
   unsigned s = plat_irq_off ();
   job->next = v3d->free_jobs;
   v3d->free_jobs = job;
@@ -774,6 +775,7 @@ v3d_init (struct v3d_dev *v3d)
       v3d->free_jobs = &v3d->jobs[i];
     }
   v3d->stats.first_hang.q = v3d->stats.last_hang.q = ~0u;	/* none yet */
+  v3d->twod.file = -1;			/* (0.17) no 2D yet */
   int ret = v3d_bo_init (v3d);
   if (ret)
     return ret;

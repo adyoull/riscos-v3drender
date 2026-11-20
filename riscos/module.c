@@ -29,8 +29,9 @@
 #include "v3d.h"
 #include "v3d_regs.h"
 #include "plat_pi4.h"
+#include "twod.h"
 
-#define VERSION 16		/* 0.16 */
+#define VERSION 17		/* 0.17 */
 #define SWI_BASE 0x5AFC0
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -47,6 +48,7 @@ void call_hal (unsigned arg, void *routine, unsigned sb);
 const char *v3d_axi_client (uint32_t id);
 
 static struct v3d_dev *dev;
+static int twod_wanted;			/* (0.17) 2D at load: TWOD_* */
 static void *private_word;
 static void *hal_irqclear;
 static unsigned hal_sb;
@@ -60,6 +62,7 @@ ERROR_BLOCK (err_v3ddriver, 0x823E02, "V3DDriver is loaded: V3DRender can't shar
 ERROR_BLOCK (err_nogpu, 0x823E03, "The GPU didn't answer as a V3D 4.2");
 ERROR_BLOCK (err_files, 0x823E04, "Too many V3DRender files are open");
 ERROR_BLOCK (err_mem, 0x823E05, "Not enough memory for V3DRender");
+ERROR_BLOCK (err_syntax, 0x823E0B, "Syntax: *V3DRender [2D on|async|off]");
 ERROR_BLOCK (err_sync, 0x823E06, "V3DRender takes its work through V3DRender_Ioctl, not RISC3D_Sync");
 
 static unsigned
@@ -140,7 +143,7 @@ file_close (int f)
 {
   v3d_close (dev, f);
   for (int i = 0; i < V3D_MAX_FILES; i++)
-    if (dev->files[i].used)
+    if (dev->files[i].used && i != dev->twod.file)
       return;
   if (clock_raised && clock_before && v3d_idle (dev))
     {
@@ -159,12 +162,15 @@ recover (int all, int report)
   v3d_cancel_all (dev);
   int closed = 0;
   if (all)
-    for (int f = 0; f < V3D_MAX_FILES; f++)
-      if (dev->files[f].used)
-	{
-	  file_close (f);
-	  closed++;
-	}
+    {
+      for (int f = 0; f < V3D_MAX_FILES; f++)
+	if (dev->files[f].used)
+	  {
+	    closed += f != dev->twod.file;
+	    file_close (f);
+	  }
+      twod_files_closed ();		/* (0.17) its own file again */
+    }
   if (report)
     {
       write0 ("The GPU was reset and its work ended.");
@@ -227,7 +233,7 @@ mod_swi (unsigned number, regs *r)
 	pi4_clock (&hz, 0);
 	int n = 0;
 	for (int i = 0; i < V3D_MAX_FILES; i++)
-	  n += dev->files[i].used;
+	  n += dev->files[i].used && i != dev->twod.file;
 	r->r[0] = VERSION;
 	r->r[1] = (unsigned) dev->ver;
 	r->r[2] = dev->ident[1];
@@ -297,6 +303,12 @@ mod_service (regs *r)
     case 0x45:				/* Service_PreReset */
       v3d_irq_disable (dev);
       break;
+    case 0x4D:				/* Service_PreModeChange (0.17) */
+      twod_mode_changing ();
+      break;
+    case 0x46:				/* Service_ModeChange */
+      twod_mode_changed ();
+      break;
     case 0xDA:				/* Service_ModulePostInit: r2 -> title */
       {
 	const char *t = (const char *) r->r[2], *want = "RISC3D";
@@ -325,6 +337,7 @@ mod_final (int fatal)
 {
   (void) fatal;
   deregister_risc3d ();
+  twod_final ();			/* (0.17) GraphicsV released first */
   if (dev)
     {
       v3d_fini (dev);
@@ -363,6 +376,7 @@ mod_init (const char *tail, int instance, void *pw)
   /* load options (0.09): NoWFI, Size <MB>; else V3DRender$Size (MB) */
   pi4_no_wfi = 0;
   pi4_area_mb = 0;
+  twod_wanted = TWOD_OFF;
   for (const char *t = tail; t && *t >= ' ';)
     {
       while (*t == ' ')
@@ -371,6 +385,8 @@ mod_init (const char *tail, int instance, void *pw)
 	t++;
       if ((t[0] | 32) == 'n' && (t[1] | 32) == 'o')
 	pi4_no_wfi = 1;
+      else if (t[0] == '2' && (t[1] | 32) == 'd')
+	twod_wanted = (t[2] | 32) == 'a' || (t[3] | 32) == 'a' ? TWOD_ASYNC : TWOD_ON;
       else if ((t[0] | 32) == 's' && (t[1] | 32) == 'i' && (t[2] | 32) == 'z' && (t[3] | 32) == 'e')
 	{
 	  t += 4;
@@ -389,6 +405,18 @@ mod_init (const char *tail, int instance, void *pw)
 	{
 	  buf[r.r[2] < sizeof buf ? r.r[2] : sizeof buf - 1] = 0;
 	  pi4_area_mb = parse_dec (buf);
+	}
+    }
+  if (!twod_wanted)
+    {
+      /* (0.17) V3DRender$2D: on, async or off */
+      char buf[8];
+      regs r = {{ (unsigned) "V3DRender$2D", (unsigned) buf, sizeof buf - 1, 0, 0 }};
+      if (!swix_regs (OS_ReadVarVal, &r))
+	{
+	  buf[r.r[2] < sizeof buf ? r.r[2] : sizeof buf - 1] = 0;
+	  twod_wanted = (buf[0] | 32) == 'a' ? TWOD_ASYNC
+	    : (buf[0] | 32) == 'o' && (buf[1] | 32) == 'n' ? TWOD_ON : TWOD_OFF;
 	}
     }
   if (!pi4_area_mb)
@@ -445,6 +473,9 @@ mod_init (const char *tail, int instance, void *pw)
     goto fail;
 
   register_risc3d ();
+  twod_init (dev, pw);
+  if (twod_wanted != TWOD_OFF)
+    twod_set (twod_wanted);		/* (0.17) the desktop's copies */
   return 0;
 
 fail:
@@ -538,6 +569,36 @@ mod_command (int index, const char *tail, int argc)
 {
   if (!dev)
     return 0;
+  if (index == 0 && argc > 0)
+    {
+      /* *V3DRender 2D on|async|off (0.17) */
+      while (*tail == ' ')
+	tail++;
+      if (tail[0] != '2' || (tail[1] | 32) != 'd')
+	return ERR (err_syntax);
+      tail += 2;
+      while (*tail == ' ')
+	tail++;
+      if ((tail[0] | 32) == 'f')		/* 2D fills on|off */
+	{
+	  while (*tail > ' ')
+	    tail++;
+	  while (*tail == ' ')
+	    tail++;
+	  if ((tail[0] | 32) != 'o' || ((tail[1] | 32) != 'n' && (tail[1] | 32) != 'f'))
+	    return ERR (err_syntax);
+	  twod.fills = (tail[1] | 32) == 'n';
+	  return 0;
+	}
+      int mode = (tail[0] | 32) == 'a' ? TWOD_ASYNC
+	: (tail[0] | 32) == 'o' && (tail[1] | 32) == 'n' ? TWOD_ON
+	: (tail[0] | 32) == 'o' && (tail[1] | 32) == 'f' ? TWOD_OFF : -1;
+      if (mode < 0)
+	return ERR (err_syntax);
+      if (mode != TWOD_OFF && twod.mode != TWOD_OFF)
+	twod_set (TWOD_OFF);		/* (from on to async, or back) */
+      return twod_set (mode);
+    }
   if (index == 2)
     {
       /* *V3DDump <file>: the first hung job's dump (0.06) */
@@ -565,7 +626,7 @@ mod_command (int index, const char *tail, int argc)
 	{
 	  int open = 0;
 	  for (int i = 0; i < V3D_MAX_FILES; i++)
-	    open += dev->files[i].used;
+	    open += dev->files[i].used && i != dev->twod.file;
 	  if (open || !v3d_idle (dev))
 	    {
 	      write0 ("The GPU is in use: close the programs using it first.");
@@ -686,7 +747,7 @@ mod_command (int index, const char *tail, int argc)
   newline ();
   int n = 0;
   for (int i = 0; i < V3D_MAX_FILES; i++)
-    n += dev->files[i].used;
+    n += dev->files[i].used && i != dev->twod.file;
   line ("Files open:            ", (unsigned) n);
   line ("Bin jobs:              ", s->jobs[V3D_BIN]);
   line ("Render jobs:           ", s->jobs[V3D_RENDER]);
@@ -724,6 +785,65 @@ mod_command (int index, const char *tail, int argc)
   write_dec (pi4_cache_threshold () / 1024);
   write0 (" KB)");
   newline ();
+  /* (0.17) the desktop's copies and fills */
+  write0 ("Desktop copies (2D):   ");
+  write0 (twod.mode == TWOD_OFF ? (twod.stopped ? "off (stopped after the GPU failed)" : "off")
+	  : twod.mode == TWOD_ASYNC ? "on, not waited for" : "on");
+  if (twod.mode != TWOD_OFF && !twod.fills)
+    write0 (", fills off");
+  if (twod.mode != TWOD_OFF && twod.screen_ok && twod.screen_why)
+    {
+      static const char *const why[] = { "", "VDU variables unreadable", "screen not 16 or 32bpp",
+	"screen geometry inconsistent", "no framestore from GraphicsV 9", "VDU and display banks differ",
+	"framestore not mappable", "screen cached by the CPU" };
+      write0 (" (not used: ");
+      write0 (twod.screen_why < 8 ? why[twod.screen_why] : "?");
+      write0 (")");
+    }
+  newline ();
+  if (twod.offered || twod.fills_offered)
+    {
+      write0 ("  copies by the GPU:   ");
+      write_dec (twod.claimed);
+      write0 (" of ");
+      write_dec (twod.offered);
+      write0 (" (");
+      write_dec (twod.scrolls);
+      write0 (" scrolls; ");
+      write_dec (twod.small);
+      write0 (" small)");
+      newline ();
+      write0 ("  fills by the GPU:    ");
+      write_dec (twod.fills_claimed);
+      write0 (" of ");
+      write_dec (twod.fills_offered);
+      write0 (" (");
+      write_dec (twod.fills_small);
+      write0 (" small, ");
+      write_dec (twod.fills_pattern);
+      write0 (" patterned)");
+      newline ();
+      write0 ("  GPU work:            ");
+      write_dec (dev->twod.tiles);
+      write0 (" tiles, ");
+      write_dec ((uint32_t) (dev->twod.ns / 1000000u));
+      write0 (" ms; waited ");
+      write_dec (dev->twod.waits);
+      write0 (" times");
+      newline ();
+      write0 ("  left to the CPU:     ");
+      write_dec (dev->twod.busy);
+      write0 (" GPU busy with 3D, ");
+      write_dec (twod.no_screen);
+      write0 (" screen, ");
+      write_dec (twod.disabled);
+      write0 (" acceleration off, ");
+      write_dec (twod.irqs_off);
+      write0 (" interrupts off, ");
+      write_dec (twod.errors);
+      write0 (" errors");
+      newline ();
+    }
   line ("MMU errors:            ", s->mmu_errors);
   if (s->mmu_errors)
     {

@@ -169,3 +169,13 @@ As Linux (`drm_sched_resubmit_jobs`), only the job that hung is ended as
 failed. Jobs then running on the other queues (for example the next
 frame's bin job while a render job hangs) go back to the front of their
 queues and run again from the start. `*V3DReset` still ends every job.
+
+## The desktop's copies and fills (0.17)
+
+Nothing changes in the requests. When the desktop's 2D work is on
+(`*V3DRender 2D on`), V3DRender itself submits render jobs, from a file
+of its own, for the desktop's copies and fills. A program's job may then
+wait behind up to four of them (each a few hundred microseconds at most),
+and their GPU time is in everyone's figures (`DRM_IOCTL_RISCOS_FILE_STATS`),
+not the program's. The desktop's work never waits for a program's: while
+a program has jobs queued or running, it is left to the CPU.

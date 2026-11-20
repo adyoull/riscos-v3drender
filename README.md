@@ -136,7 +136,7 @@ structures and the libdrm layer.
 | `V3DRender_Reset` (&5AFC4) | r0 bit 0: also close every file | |
 | `V3DRender_Debug` (&5AFC5) | r0 = 0, r1 = GPU address; r0 = 1; or r0 = 2, r1 = GPU address | r0 = page table entry; r0, r1 = the MMU's address widths; or (2, 0.13) the next BO starts at r1 if free (the kit's replay) |
 
-`*V3DRender` shows the GPU and what it has done; `*V3DClock [MHz]`;
+`*V3DRender [2D on|async|off|fills on|off]` shows the GPU and what it has done (0.17: and turns the desktop's 2D work on or off); `*V3DClock [MHz]`;
 `*V3DPower [cycle]`; `*V3DDump <file>`; `*V3DReset [all]`.
 
 **If something goes wrong (0.10):** `*V3DReset` ends every GPU job, running or
@@ -168,15 +168,31 @@ Load options (0.09), in any order:
   before V3DRender loads.
 - `NoWFI`: waits spin instead of sleeping the CPU until the next
   interrupt.
+- `2D` or `2DAsync` (0.17): the desktop's copies and fills on the GPU,
+  waited for or not (above). Without it, `V3DRender$2D` (`on`, `async`).
 
-## V3DDriver
+## The desktop's copies and fills (0.17)
 
-Rob Heaton's V3DDriver accelerates the desktop's fills and copies with
-the same GPU. The two can't drive the GPU at once (both would take
-device 10 and the job registers), so V3DRender won't load while
-V3DDriver is loaded. The plan is that V3DDriver becomes a client of
-V3DRender (its jobs through V3DRender's queues), once V3DRender is
-proven.
+V3DRender can do the desktop's rectangle copies (window moves, scrolls,
+`OS_Plot` block copies) and solid fills on the GPU, through its own
+queues: GraphicsV 13 ops 1 and 2. This is Rob Heaton's V3DDriver 2D
+acceleration, written again for V3DRender (V3DDriver itself can't be
+loaded with V3DRender, as both would drive the GPU). It is **off by
+default**:
+
+- `*V3DRender 2D on`: each copy and fill waited for.
+- `*V3DRender 2D async`: not waited for, up to four at once, honouring
+  GraphicsV's "synchronise" flags (experimental: a program reading the
+  screen directly could see it unfinished).
+- `*V3DRender 2D off`; `*V3DRender 2D fills on|off` for fills alone.
+- At load: the `2D` or `2DAsync` option, or `*Set V3DRender$2D on`
+  (or `async`) before V3DRender loads.
+
+Small copies and fills (Rob's measured limits), patterned fills, a
+cached screen, `OS_ScreenMode 4`'s "no hardware acceleration", and
+anything while a program has 3D work on the GPU are left to the CPU.
+`*V3DRender` shows what was done and why the rest wasn't. The kit's
+Desk2D checks the GPU's result against the CPU's on the screen.
 
 ## Building
 
@@ -195,6 +211,10 @@ GNU General Public License, version 2 or later (see `LICENSE` and
 - The Pi 4 power-up, already-running check and reset sequence: Rob
   Heaton's V3DDriver (GPL-2.0-or-later), which took them from
   rpi4-gpu-bare-metal-examples (MIT, Copyright (c) 2022 Random06457).
+- The desktop's copies and fills (`core/v3d_2d.c`, `riscos/twod.c`,
+  0.17): after Rob Heaton's V3DDriver (GPL-2.0-or-later): its GraphicsV
+  13 handling, tile load/store and clear lists, tile order for
+  overlapping copies, formats and measured limits.
 - `common/`: Andrew Youll's C module framework (MIT).
 
 Copyright (c) 2026 Andrew Youll.

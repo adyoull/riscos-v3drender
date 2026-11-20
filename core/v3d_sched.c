@@ -186,7 +186,8 @@ release_job (struct v3d_dev *v3d, struct v3d_job *job)
 	}
       v3d_bo_put (v3d, job->bos[i]);
     }
-  plat_free (job->bos);
+  if (job->bos != job->few)
+    plat_free (job->bos);
   /* binner overflow memory goes back to the pool (Linux frees it with
      the render job) */
   for (uint32_t i = 0; i < job->noverflow; i++)

@@ -1,0 +1,216 @@
+10 REM Draw2D (run by Desk2D): V3DRender 0.17's desktop copies and fills, on this screen.
+20 REM Each copy and fill is drawn twice on a patterned part of the screen:
+30 REM once with hardware acceleration off (the CPU's result), once with
+40 REM V3DRender's 2D on; the two must be the same. Then timings, the same
+50 REM work 100 times each way, and the same with 2D not waited for.
+60 REM Results go on the screen and into Results2D.
+70 REM SPDX-License-Identifier: GPL-2.0-or-later
+80 REM Copyright (c) 2026 Andrew Youll
+90 out%=0:mflags%=-1:async%=FALSE
+100 ON ERROR PROCerr:END
+110 dir$=FNdir
+120 IF dir$="" THEN PRINT "Run Desk2D (it sets V3DCheck$Dir and runs Draw2D)":END
+130 out%=OPENOUT(dir$+".Results2D")
+140 fails%=0
+150 SYS "OS_Module",18,"V3DRender"
+160 SYS "V3DRender_Info" TO ver%
+170 PROCsay("Desk2D: V3DRender "+STR$(ver%DIV100)+"."+RIGHT$("0"+STR$(ver%MOD100),2)+"'s desktop copies and fills")
+180 IF ver%<17 THEN PROCsay("  FAIL  needs V3DRender 0.17"):PROCend
+190 DIM v% 64,q% 64
+200 v%!0=9:v%!4=6:v%!8=11:v%!12=12:v%!16=4:v%!20=5:v%!24=148:v%!28=-1
+210 SYS "OS_ReadVduVariables",v%,q%
+220 l2%=q%!0:stride%=q%!4:xlim%=q%!8:ylim%=q%!12:xe%=q%!16:ye%=q%!20:scr%=q%!24
+230 PROCsay("Screen: "+STR$(xlim%+1)+" x "+STR$(ylim%+1)+", "+STR$(1<<l2%)+" bits a pixel, "+STR$stride%+" bytes a row")
+240 IF l2%<>5 AND l2%<>4 THEN PROCsay("  The 2D work is for 16 and 32 bits a pixel: choose such a mode and run Desk2D again"):PROCend
+250 IF xlim%<703 OR ylim%<447 THEN PROCsay("  The screen is too small (needs 704 x 448)"):PROCend
+260 bpp%=1<<(l2%-3)
+270 SYS "OS_ScreenMode",4,-1 TO ,mflags%
+280 PROCsay("OS_ScreenMode 4 flags: &"+STR$~mflags%)
+290 IF mflags% AND 4 THEN PROCsay("  (hardware acceleration was turned off: on while Desk2D runs)")
+300 oflags%=mflags%:mflags%=mflags% AND NOT 4
+310 rx%=64:ry%=64:rw%=640:rh%=384:rb%=rw%*bpp%
+320 DIM pat% rb%*rh%,a% rb%*rh%,b% rb%*rh%
+330 PROCasm
+340 PROCpattern
+350 VDU 26
+360 v%!0=133:v%!4=134:v%!8=-1:SYS "OS_ReadVduVariables",v%,q%
+370 ch%=(ylim%+1)DIV(q%!0+1):top%=(ry%+rh%)DIV ch%+2
+380 VDU 28,0,q%!0,q%!4,top%,12
+390 OSCLI "V3DRender 2D on"
+400 PROCsay("")
+410 PROCsay("1. Each copy and fill, the CPU's result against the GPU's (*V3DRender 2D on)")
+420 PROCstatus(0)
+430 PROCcases
+440 PROCstatus(1)
+450 PROCsay("")
+460 PROCsay("2. Speed: each 100 times, the CPU then the GPU")
+470 PROCtime("copy 512 x 320", 1, 0,0, 512,320, 64,32)
+480 PROCtime("copy 256 x 256", 1, 0,0, 256,256, 300,100)
+490 PROCtime("scroll 640 x 383 up a row", 1, 0,1, 640,383, 0,0)
+500 PROCtime("copy 64 x 64", 1, 0,0, 64,64, 100,100)
+510 PROCtime("fill 640 x 384", 2, 0,0, 640,384, &FF8040,0)
+520 PROCtime("fill 256 x 256", 2, 0,0, 256,256, &4080FF,0)
+530 PROCtime("fill 128 x 128", 2, 0,0, 128,128, &808080,0)
+540 PROCsay("")
+550 PROCsay("3. Not waited for (*V3DRender 2D async): the same, with one wait before reading")
+560 OSCLI "V3DRender 2D async"
+570 async%=TRUE
+580 PROCcases
+590 PROCtime("copy 512 x 320", 1, 0,0, 512,320, 64,32)
+600 PROCtime("fill 640 x 384", 2, 0,0, 640,384, &FF8040,0)
+610 async%=FALSE
+620 OSCLI "V3DRender 2D off"
+630 PROCstatus(1)
+640 PROCsay("")
+650 IF fails%=0 THEN PROCsay("Desk2D: all the same") ELSE PROCsay("Desk2D: "+STR$fails%+" different")
+660 PROCsay("*V3DRender afterwards:")
+670 PROCspool
+680 PROCend
+690 END
+700 DEF PROCcases
+710 PROCcopy("256 x 128, apart", 0,0, 256,128, 300,200)
+720 PROCcopy("scroll 640 x 383 up a row", 0,1, 640,383, 0,0)
+730 PROCcopy("scroll 600 x 300 down 7, right 3", 0,0, 600,300, 3,7)
+740 PROCcopy("scroll 400 x 200 left 70", 70,10, 400,200, 0,10)
+750 PROCcopy("scroll 300 x 300 up 64, left 64", 64,64, 300,300, 0,0)
+760 PROCcopy("64 x 16 (the fewest rows the GPU takes)", 10,300, 64,16, 300,300)
+770 PROCcopy("odd edges: 129 x 77 from 1,3 to 6,250", 1,3, 129,77, 6,250)
+780 PROCcopy("30 x 30 (the CPU's)", 0,0, 30,30, 100,100)
+790 PROCfill("300 x 200 orange", 100,50, 300,200, &4080FF00)
+800 PROCfill("640 x 384 grey", 0,0, 640,384, &80808000)
+810 PROCfill("101 x 99 at 7,9 teal", 7,9, 101,99, &80800000)
+820 PROCfill("512 x 32 green (left to the CPU: too thin)", 0,0, 512,32, &00FF0000)
+830 PROCfill("64 x 64 white", 200,200, 64,64, &FFFFFF00)
+840 ENDPROC
+850 DEF PROCcopy(t$,sx%,sy%,w%,h%,dx%,dy%)
+860 PROCrun(t$,1,sx%,sy%,w%,h%,dx%,dy%)
+870 ENDPROC
+880 DEF PROCfill(t$,x%,y%,w%,h%,c%)
+890 PROCrun(t$,2,x%,y%,w%,h%,c%,0)
+900 ENDPROC
+910 REM op 1: copy (x,y,w,h) to (p,q); op 2: fill (x,y,w,h) with colour p
+920 REM (&BBGGRR00); pixels from the region's top left
+930 DEF PROCrun(t$,op%,x%,y%,w%,h%,p%,q%)
+940 LOCAL d%
+950 PROCput:PROCaccel(FALSE):PROCop(op%,x%,y%,w%,h%,p%,q%):PROCget(a%)
+960 PROCput:PROCaccel(TRUE):PROCop(op%,x%,y%,w%,h%,p%,q%):PROCsync:PROCget(b%)
+970 A%=a%:B%=b%:C%=rb%*rh%:d%=USR cmp%
+980 IF d%=-1 THEN PROCcheck(TRUE,t$) ELSE PROCcheck(FALSE,t$+": differs at row "+STR$(d% DIV rb%)+", pixel "+STR$((d% MOD rb%) DIV bpp%)+" (CPU &"+STR$~(a%!(d% AND NOT 3))+", GPU &"+STR$~(b%!(d% AND NOT 3))+")")
+990 ENDPROC
+1000 DEF PROCop(op%,x%,y%,w%,h%,p%,q%)
+1010 IF op%=1 THEN MOVE FNx(x%),FNy(y%+h%-1):MOVE FNx(x%+w%-1),FNy(y%):PLOT 190,FNx(p%),FNy(q%+h%-1)
+1020 IF op%=2 THEN SYS "ColourTrans_SetGCOL",p%,,,0,0:MOVE FNx(x%),FNy(y%+h%-1):PLOT 101,FNx(x%+w%-1),FNy(y%)
+1030 ENDPROC
+1040 DEF PROCtime(t$,op%,x%,y%,w%,h%,p%,q%)
+1050 LOCAL i%,t0%,cpu%,gpu%,r$
+1060 PROCput
+1070 PROCaccel(FALSE):SYS "OS_ReadMonotonicTime" TO t0%
+1080 FOR i%=1 TO 100:PROCop(op%,x%,y%,w%,h%,p%,q%):NEXT
+1090 SYS "OS_ReadMonotonicTime" TO cpu%:cpu%-=t0%
+1100 PROCput
+1110 PROCaccel(TRUE):SYS "OS_ReadMonotonicTime" TO t0%
+1120 FOR i%=1 TO 100:PROCop(op%,x%,y%,w%,h%,p%,q%):NEXT
+1130 PROCsync
+1140 SYS "OS_ReadMonotonicTime" TO gpu%:gpu%-=t0%
+1150 r$="":IF gpu% THEN r$=" ("+STR$(INT(cpu%/gpu%*100+.5)/100)+" x)"
+1160 PROCsay("  "+t$+": CPU "+STR$(cpu%*10)+" ms, GPU "+STR$(gpu%*10)+" ms"+r$)
+1170 ENDPROC
+1180 REM hardware acceleration (OS_ScreenMode 4 bit 2 clear) on or off
+1190 DEF PROCaccel(on%)
+1200 IF on% THEN SYS "OS_ScreenMode",4,mflags% ELSE SYS "OS_ScreenMode",4,mflags% OR 4
+1210 ENDPROC
+1220 REM not waited for: GraphicsV 13 op 0 with "synchronise", as the OS asks
+1230 DEF PROCsync
+1240 IF async% THEN SYS "OS_CallAVector",1,0,0,0,13,,,,,42
+1250 ENDPROC
+1260 DEF FNx(px%)=(rx%+px%)<<xe%
+1270 DEF FNy(py%)=(ylim%-(ry%+py%))<<ye%
+1280 DEF PROCput
+1290 A%=scr%+ry%*stride%+rx%*bpp%:B%=pat%:C%=rb%:D%=rh%:E%=stride%:F%=rb%:CALL copy%
+1300 ENDPROC
+1310 DEF PROCget(m%)
+1320 A%=m%:B%=scr%+ry%*stride%+rx%*bpp%:C%=rb%:D%=rh%:E%=rb%:F%=stride%:CALL copy%
+1330 ENDPROC
+1340 DEF PROCpattern
+1350 LOCAL x%,y%,s%
+1360 s%=12345
+1370 FOR y%=0 TO rh%-1
+1380  FOR x%=0 TO rb%-4 STEP 4
+1390   s%=s% EOR (s%<<13):s%=s% EOR (s%>>>17):s%=s% EOR (s%<<5)
+1400   pat%!(y%*rb%+x%)=s% EOR (x%<<8) EOR y%
+1410  NEXT
+1420 NEXT
+1430 ENDPROC
+1440 DEF PROCasm
+1450 LOCAL pass%
+1460 DIM code% 256
+1470 FOR pass%=0 TO 2 STEP 2
+1480 P%=code%
+1490 [OPT pass%
+1500 .copy%
+1510 STMFD R13!,{R4-R8,R14}
+1520 .crow
+1530 MOV R6,#0
+1540 .ccol
+1550 LDR R7,[R1,R6]:STR R7,[R0,R6]:ADD R6,R6,#4:CMP R6,R2:BLT ccol
+1560 ADD R0,R0,R4:ADD R1,R1,R5:SUBS R3,R3,#1:BNE crow
+1570 LDMFD R13!,{R4-R8,PC}
+1580 .cmp%
+1590 STMFD R13!,{R4,R14}
+1600 MOV R3,#0
+1610 .cl
+1620 CMP R3,R2:BGE same
+1630 LDR R4,[R0,R3]:LDR R12,[R1,R3]:CMP R4,R12:BNE diff
+1640 ADD R3,R3,#4:B cl
+1650 .same
+1660 MVN R0,#0:LDMFD R13!,{R4,PC}
+1670 .diff
+1680 MOV R0,R3:LDMFD R13!,{R4,PC}
+1690 ]
+1700 NEXT
+1710 ENDPROC
+1720 REM the 2D lines of *V3DRender (s%=1: shown)
+1730 DEF PROCstatus(s%)
+1740 LOCAL f%,l$
+1750 OSCLI "Spool "+dir$+".2DStatus":OSCLI "V3DRender":OSCLI "Spool"
+1760 f%=OPENIN(dir$+".2DStatus")
+1770 WHILE NOT EOF#f%
+1780  l$=GET$#f%
+1790  IF s% AND (INSTR(l$,"(2D)") OR INSTR(l$," by the GPU") OR INSTR(l$,"GPU work") OR INSTR(l$,"left to the CPU")) THEN PROCsay(l$)
+1800 ENDWHILE
+1810 CLOSE#f%
+1820 ENDPROC
+1830 DEF PROCspool
+1840 LOCAL f%,l$
+1850 OSCLI "Spool "+dir$+".2DStatus":OSCLI "V3DRender":OSCLI "Spool"
+1860 f%=OPENIN(dir$+".2DStatus")
+1870 WHILE NOT EOF#f%:l$=GET$#f%:IF l$<>"" THEN BPUT#out%,l$
+1880 ENDWHILE
+1890 CLOSE#f%
+1900 ENDPROC
+1910 DEF PROCcheck(c%,t$):IF c% THEN PROCsay("  ok    "+t$) ELSE PROCsay("  FAIL  "+t$):fails%+=1
+1920 ENDPROC
+1930 DEF PROCsay(t$):PRINT t$:BPUT#out%,t$:ENDPROC
+1940 DEF PROCerr
+1950 LOCAL e$
+1960 e$=REPORT$+" (line "+STR$ERL+")"
+1970 PRINT e$
+1980 ON ERROR OFF
+1990 IF out% THEN BPUT#out%,e$
+2000 PROCend
+2010 ENDPROC
+2020 DEF PROCend
+2030 ON ERROR OFF
+2040 IF mflags%<>-1 THEN SYS "XOS_ScreenMode",4,oflags%
+2050 SYS "XOS_CLI","V3DRender 2D off"
+2060 IF out% THEN CLOSE#out%:out%=0:SYS "OS_File",18,dir$+".Results2D",&FFF
+2070 SYS "XWimp_ForceRedraw",-1,-&10000,-&10000,&10000,&10000
+2080 END
+2090 ENDPROC
+2100 DEF FNdir
+2110 LOCAL b%,i%
+2120 DIM b% 256
+2130 SYS "OS_GSTrans","<V3DCheck$Dir>",b%,256
+2140 i%=0:WHILE b%?i%>=32:i%+=1:ENDWHILE
+2150 b%?i%=13
+2160 =$b%

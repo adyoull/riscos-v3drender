@@ -9,10 +9,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 mkdir -p out/obj
-CORE="core/v3d_hw.c core/v3d_sched.c core/v3d_bo.c core/v3d_ioctl.c"
+CORE="core/v3d_hw.c core/v3d_sched.c core/v3d_bo.c core/v3d_ioctl.c core/v3d_2d.c"
 INC="-Iinclude -Icore -Icore/compat"
 
 # the host test, with the address and undefined-behaviour checkers
+mkdir -p out/cl2d
 gcc -std=gnu11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined $INC \
   -o out/sim test/host/sim.c $CORE
 out/sim
@@ -25,7 +26,7 @@ MC="-std=gnu11 -O2 -marm -march=armv7-a -mno-unaligned-access -fpie -fvisibility
 ML="-nostdlib -static -Wl,--no-dynamic-linker -Wl,-T,common/module.ld -Wl,--build-id=none -Wl,-z,norelro"
 ${T}as -I common -o out/obj/header.o riscos/header.s
 objs="out/obj/header.o"
-for c in common/cmodule.c riscos/module.c riscos/plat_pi4.c $CORE; do
+for c in common/cmodule.c riscos/module.c riscos/plat_pi4.c riscos/twod.c $CORE; do
   o=out/obj/$(basename "${c%.c}").o
   ${T}gcc $MC -c -o "$o" "$c"
   objs="$objs $o"
@@ -62,6 +63,7 @@ mkdir -p out/cl
 gcc -std=gnu11 -Wall -Wextra -Werror -Ikit/src -o out/cltest test/host/cltest.c kit/src/clbuild.c
 out/cltest out/cl > /dev/null
 python3 -B test/host/cldecode.py test/host/v3d_packet.xml out/cl | tail -1
+python3 -B test/host/cl2d.py test/host/v3d_packet.xml out/cl2d
 gcc -std=gnu11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined $INC -Ikit/src \
   -o out/jobhost kit/src/v3djob.c kit/src/clbuild.c test/host/jobhost.c $CORE
 out/jobhost | grep -E "passed|failed"
@@ -79,7 +81,7 @@ ${T}strip out/obj/v3djob.elf
 # the Pi test kit
 cp "out/V3DRender,ffa" out/obj/
 python3 tools/mkkit.py out/V3DRenderTest.zip V3DRenderTest kit/ReadMe,fff kit/Check,feb \
-  kit/HangTest,feb kit/Replay,feb kit/V3DCheck,fd1 "out/obj/V3DJob,ff8" "out/obj/V3DRender,ffa" \
+  kit/HangTest,feb kit/Replay,feb kit/V3DCheck,fd1 kit/Desk2D,feb kit/Draw2D,fd1 "out/obj/V3DJob,ff8" "out/obj/V3DRender,ffa" \
   "kit/RISC3D,ffa" "kit/MesaJob,ffd"
 ls -la "out/V3DRender,ffa" out/V3DRenderTest.zip
 # (delivered kits are numbered: V3DRenderTest-2.zip was 0.02's)

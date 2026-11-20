@@ -35,7 +35,17 @@ Material from other projects
    Pi 4 power-up (v3d_power_on), its check for a V3D that is already
    running (v3d_hw_is_up), its bus-gate stop (v3d_stop_bridge), its
    firmware clock calls (v3d_clock.c) and its interrupt device number
-   (v3d_irq.c). V3DDriver took the register offsets and the power-on
+   (v3d_irq.c). Since 0.17, core/v3d_2d.c and riscos/twod.c follow its
+   GraphicsV Render acceleration (gfxv_accel.c, cl_copy.c, cl_fill.c,
+   cl_common.c, cl_packets.h, screen_info.c): the decoding of GraphicsV
+   13 ops 1 and 2 and of a solid ECF, the driver 0 / head 0 rule,
+   finding the framestore (GraphicsV 9) and the VDU's bank (GraphicsV
+   6), the per-tile Load/Store Tile Buffer General copy and the Clear
+   Tile Buffers fill, the render list's header and supertiles, the one-
+   pass tile order for overlapping copies, the RGBA8 and BGR565 formats
+   and 16bpp colour widening, and the size limits Rob measured on the
+   hardware. They are written again, not copied, for V3DRender's queues
+   and MMU. V3DDriver took the register offsets and the power-on
    sequence from rpi4-gpu-bare-metal-examples (MIT licence, Copyright (c)
    2022 Random06457, github.com/Random06457/rpi4-gpu-bare-metal-examples),
    whose notice follows.

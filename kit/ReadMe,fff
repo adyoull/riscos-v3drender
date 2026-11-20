@@ -1,3 +1,32 @@
+V3DRender 0.17: kit 20
+======================
+
+V3DRender can now do the desktop's copies and fills on the GPU (window
+moves, scrolls, plain rectangles), written again after Rob Heaton's
+V3DDriver, which can't be loaded with V3DRender. It is off unless
+turned on:
+
+  *V3DRender 2D on      each copy and fill waited for
+  *V3DRender 2D async   not waited for (experimental)
+  *V3DRender 2D off
+
+Please:
+  1. Run Check, as before (it loads 0.17), and keep Results.
+  2. Run Desk2D. It draws on part of the screen for about a minute
+     (leave the mouse and keyboard alone), checks the GPU's copies and
+     fills against the CPU's, times both, and writes Results2D. The
+     desktop is redrawn at the end. Best in a 32bpp (16M colour) mode;
+     run it again in a 16bpp (64K colour) mode if you can.
+  3. If Results2D says the screen is "cached by the CPU", the GPU
+     leaves everything to the CPU: say so, and send *V3DRender's
+     output.
+  4. If it all agrees, try *V3DRender 2D on for a while in the
+     desktop (drag windows, scroll long documents) and send
+     *V3DRender's output: it counts what the GPU did.
+
+Send Results, Results2D and *V3DRender's output. *V3DRender 2D off
+puts things back.
+
 V3DRender 0.16: kit 19
 ======================
 

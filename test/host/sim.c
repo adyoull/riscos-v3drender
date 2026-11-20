@@ -774,6 +774,349 @@ test_015 (void)
   teardown ();
 }
 
+/* (0.17) the desktop's copies: the framestore mapped, a copy's render
+   list (dumped for test/host/cl2d.py), the job (render only), async,
+   declined while 3D work is on the GPU, forget, stop */
+static void
+test_017 (void)
+{
+  setup (42);
+  CHECK (v3d_hw_probe (dev) == 0 && v3d_init (dev) == 0);
+  CHECK (dev->twod.file == -1);
+  struct v3d_2d_copy c = { 0, 0, 7680, 100, 100, 4, 0, 0 };
+  CHECK (v3d_2d_copy (dev, &c) == -V3D_EINVAL);		/* not started */
+  CHECK (v3d_2d_start (dev) == 0 && dev->twod.file >= 0 && dev->twod.cl_cpu);
+  CHECK (v3d_2d_copy (dev, &c) == -V3D_EINVAL);		/* no screen */
+  /* a 1920x1080 32bpp framestore at a 1 MB-aligned &3E000000 + 64 KB */
+  uint64_t fs = 0x3E010000ull;
+  CHECK (v3d_2d_screen (dev, fs, 1920 * 1080 * 4) == 0);
+  int sbo = dev->files[dev->twod.file].handles[dev->twod.scr_handle];
+  CHECK (sbo && dev->bos[sbo].imported && dev->bos[sbo].nocache && !dev->bos[sbo].cpu);
+  uint32_t p0 = dev->bos[sbo].first;
+  CHECK ((p0 & 255) == 0 && (pt[p0] & 0xFFFFFF) == 0x3E000 && (pt[p0] & (1u << 31)));	/* 1 MB entries */
+  CHECK (dev->twod.scr_gpu == p0 * 4096 + 0x10000);
+  CHECK (v3d_2d_screen (dev, fs, 1920 * 1080 * 4) == 0
+	 && dev->files[dev->twod.file].handles[dev->twod.scr_handle] == sbo);	/* kept */
+  /* outside the framestore */
+  struct v3d_2d_copy bad = { 1920 * 1079 * 4, 0, 7680, 2, 2, 4, 0, 0 };
+  CHECK (v3d_2d_copy (dev, &bad) == -V3D_EINVAL);
+  struct v3d_2d_copy wide = { 0, 0, 7680, 1921, 2, 4, 0, 0 };
+  CHECK (v3d_2d_copy (dev, &wide) == -V3D_EINVAL);
+  /* a 200x100 copy, left running */
+  c = (struct v3d_2d_copy) { 10 * 7680 + 40, 300 * 7680 + 800, 7680, 200, 100, 4, 0, 0 };
+  CHECK (v3d_2d_copy (dev, &c) == 0 && dev->twod.pending && busy[V3D_RENDER] && !busy[V3D_BIN]);
+  CHECK (regs[V3D_BANK_CORE0][V3D_CLE_CT1QBA / 4] == dev->twod.cl_gpu);
+  uint32_t len = regs[V3D_BANK_CORE0][V3D_CLE_CT1QEA / 4] - dev->twod.cl_gpu;
+  CHECK (len == 52 + 4 * 2 * 32 + 1);			/* 4x2 tiles */
+  FILE *o = fopen ("out/cl2d/base", "w");
+  if (o)
+    {
+      fprintf (o, "%u\n", dev->twod.scr_gpu);
+      fclose (o);
+    }
+  o = fopen ("out/cl2d/copy-200x100.bin", "wb");
+  if (o)
+    {
+      fwrite (dev->twod.cl_cpu, 1, len, o);
+      fclose (o);
+    }
+  sim_finish (V3D_RENDER);
+  CHECK (v3d_2d_sync (dev) == 0 && !dev->twod.pending);
+  /* a scroll down and right, waited for: tiles from the far end */
+  c = (struct v3d_2d_copy) { 0, 7680 * 20 + 8 * 4, 7680, 130, 70, 4,
+			     V3D_2D_COLS_DESCENDING | V3D_2D_ROWS_DESCENDING, 0 };
+  CHECK (v3d_2d_copy (dev, &c) == 0);
+  len = regs[V3D_BANK_CORE0][V3D_CLE_CT1QEA / 4] - dev->twod.cl_gpu;
+  o = fopen ("out/cl2d/scroll-130x70.bin", "wb");
+  if (o)
+    {
+      fwrite (dev->twod.cl_cpu, 1, len, o);
+      fclose (o);
+    }
+  /* the next copy waits for it first (the list's buffer is reused) */
+  sim_finish (V3D_RENDER);
+  c = (struct v3d_2d_copy) { 0, 7680 * 200, 7680, 64, 64, 4, 0, 0 };
+  CHECK (v3d_2d_copy (dev, &c) == 0 && dev->twod.copies == 3 && dev->twod.scrolls == 1);
+  sim_finish (V3D_RENDER);
+  CHECK (v3d_2d_sync (dev) == 0);
+  /* 16bpp: BGR565 (format 7) */
+  c = (struct v3d_2d_copy) { 0, 3840 * 300, 3840, 100, 64, 2, 0, 0 };
+  CHECK (v3d_2d_copy (dev, &c) == 0);
+  len = regs[V3D_BANK_CORE0][V3D_CLE_CT1QEA / 4] - dev->twod.cl_gpu;
+  o = fopen ("out/cl2d/copy16-100x64.bin", "wb");
+  if (o)
+    {
+      fwrite (dev->twod.cl_cpu, 1, len, o);
+      fclose (o);
+    }
+  sim_finish (V3D_RENDER);
+  CHECK (v3d_2d_sync (dev) == 0);
+  /* async: lists queue behind each other in the buffer's four parts */
+  c = (struct v3d_2d_copy) { 0, 7680 * 200, 7680, 64, 64, 4, 0, 0 };
+  uint32_t waits = dev->twod.waits;
+  CHECK (v3d_2d_copy (dev, &c) == 0 && v3d_2d_copy (dev, &c) == 0 && dev->twod.pending == 2
+	 && dev->twod.slot == 2 && dev->twod.waits == waits);
+  CHECK (regs[V3D_BANK_CORE0][V3D_CLE_CT1QBA / 4] == dev->twod.cl_gpu
+	 && dev->head[V3D_RENDER] && dev->head[V3D_RENDER]->a.cl.start == dev->twod.cl_gpu + (128u * 1024 - 64) / 4 / 64 * 64);
+  struct v3d_2d_fill fl = { 7680 * 500 + 40, 7680, 300, 200, 4, 0x00FF8040, 0 };
+  CHECK (v3d_2d_fill (dev, &fl) == 0 && dev->twod.pending == 3 && dev->twod.fills == 1);
+  CHECK (v3d_2d_copy (dev, &c) == 0 && dev->twod.pending == 4 && dev->twod.slot == 0);
+  for (int i = 0; i < 4; i++)
+    sim_finish (V3D_RENDER);
+  {
+    uint32_t at = 2 * ((128u * 1024 - 64) / 4 / 64 * 64);
+    len = v3d_2d_fill_rcl (dev->twod.cl_cpu + 100000, 20000, dev->twod.cl_gpu + 128 * 1024 - 64,
+			   dev->twod.scr_gpu + fl.dst, 7680, 300, 200, 27, 0x00FF8040);
+    CHECK (len && !memcmp (dev->twod.cl_cpu + at, dev->twod.cl_cpu + 100000, len));
+    o = fopen ("out/cl2d/fill-300x200.bin", "wb");
+    if (o)
+      {
+	fwrite (dev->twod.cl_cpu + at, 1, len, o);
+	fclose (o);
+      }
+  }
+  /* a fifth waits for all four, then starts again at the first part */
+  CHECK (v3d_2d_copy (dev, &c) == 0 && dev->twod.waits == waits + 1 && dev->twod.pending == 1
+	 && dev->twod.slot == 1 && regs[V3D_BANK_CORE0][V3D_CLE_CT1QBA / 4] == dev->twod.cl_gpu);
+  sim_finish (V3D_RENDER);
+  CHECK (v3d_2d_sync (dev) == 0);
+  /* a list bigger than a part: everything waited for, the whole buffer */
+  CHECK (v3d_2d_screen (dev, fs, 5120 * 2048) == 0);	/* 2560x2048 at 16bpp */
+  CHECK (v3d_2d_copy (dev, &c) == 0 && dev->twod.pending == 1);
+  struct v3d_2d_copy big = { 0, 5120, 5120, 2560, 2047, 2, V3D_2D_ROWS_DESCENDING, 0 };
+  waits = dev->twod.waits;
+  sim_finish (V3D_RENDER);
+  CHECK (v3d_2d_copy (dev, &big) == 0 && dev->twod.waits == waits + 1
+	 && dev->twod.pending == V3D_2D_SLOTS && dev->twod.slot == 0
+	 && regs[V3D_BANK_CORE0][V3D_CLE_CT1QBA / 4] == dev->twod.cl_gpu
+	 && regs[V3D_BANK_CORE0][V3D_CLE_CT1QEA / 4] - dev->twod.cl_gpu == 52 + 40 * 32 * 32 + 1);
+  sim_finish (V3D_RENDER);
+  CHECK (v3d_2d_copy (dev, &c) == 0 && dev->twod.waits == waits + 2 && dev->twod.slot == 1);
+  sim_finish (V3D_RENDER);
+  CHECK (v3d_2d_sync (dev) == 0);
+  sbo = dev->files[dev->twod.file].handles[dev->twod.scr_handle];
+  /* a program's 3D job on the GPU: declined, nothing submitted */
+  int f = v3d_open (dev, 1);
+  struct drm_v3d_submit_cl k = { .rcl_start = 0x10, .rcl_end = 0x20 };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &k) == 0 && busy[V3D_RENDER]);
+  uint32_t qba = regs[V3D_BANK_CORE0][V3D_CLE_CT1QBA / 4];
+  CHECK (v3d_2d_copy (dev, &c) == -V3D_EBUSY && dev->twod.busy == 1
+	 && regs[V3D_BANK_CORE0][V3D_CLE_CT1QBA / 4] == qba);
+  sim_finish (V3D_RENDER);
+  v3d_service (dev);
+  CHECK (v3d_2d_copy (dev, &c) == 0);
+  /* the job ended by a reset: an error (the caller turns 2D off) */
+  regs[V3D_BANK_CORE0][V3D_CLE_CT1CA / 4] = 0x1234;
+  now_cs += 20;
+  v3d_service (dev);
+  now_cs += 60;
+  CHECK (v3d_2d_sync (dev) == -V3D_EIO && dev->twod.failed == 1);
+  /* the screen forgotten (a mode change), then stopped */
+  v3d_2d_forget_screen (dev);
+  CHECK (!dev->twod.scr_handle && !dev->bos[sbo].used);
+  CHECK (v3d_2d_copy (dev, &c) == -V3D_EINVAL);
+  int tf = dev->twod.file;
+  v3d_2d_stop (dev);
+  CHECK (dev->twod.file == -1 && !dev->files[tf].used);
+  v3d_close (dev, f);
+  teardown ();
+}
+
+/* (0.17) the copies' render lists carried out as the GPU does them: tile
+   by tile, each loaded from the source and stored to the destination,
+   clipped to the frame. Checked against memmove (an overlapping copy must
+   look as if the source were read first), at both depths, for shifts in
+   every direction, small and large. */
+static uint8_t fb2d[256 * 1024], want2d[sizeof fb2d];
+
+static int
+exec_2d (const uint8_t *cl, uint32_t len, uint32_t base)
+{
+  uint32_t w = 0, h = 0, col = 0, row = 0, clear = 0;
+  int rgba = 0;				/* the buffer holds RGBA8 (cleared), not loaded pixels */
+  static uint8_t tile[64 * 64 * 4];
+  for (uint32_t i = 0; i < len;)
+    {
+      uint8_t op = cl[i];
+      uint64_t g;
+      uint32_t addr, stride, bpp, fmt;
+      switch (op)
+	{
+	case 121:
+	  if ((cl[i + 1] & 15) == 0)
+	    {
+	      w = cl[i + 2] | cl[i + 3] << 8;
+	      h = cl[i + 4] | cl[i + 5] << 8;
+	    }
+	  if ((cl[i + 1] & 15) == 3)
+	    memcpy (&clear, cl + i + 2, 4);
+	  i += 9;
+	  break;
+	case 25:
+	  for (uint32_t k = 0; k < 64 * 64; k++)
+	    memcpy (tile + 4 * k, &clear, 4);
+	  rgba = 1;
+	  i += 2;
+	  break;
+	case 122: i += 9; break;
+	case 123: i += 5; break;
+	case 126: i += 2; break;
+	case 124:
+	  col = (cl[i + 1] | cl[i + 2] << 8 | cl[i + 3] << 16) & 0xFFF;
+	  row = (cl[i + 1] | cl[i + 2] << 8 | cl[i + 3] << 16) >> 12;
+	  i += 4;
+	  break;
+	case 30:
+	case 29:
+	  memcpy (&g, cl + i + 1, 8);
+	  memcpy (&addr, cl + i + 9, 4);
+	  if (op == 29 && (g & 0xF) == 8)
+	    {
+	      i += 13;			/* stores nothing */
+	      break;
+	    }
+	  if (op == 30)
+	    rgba = 0;
+	  fmt = (g >> 12) & 63;
+	  stride = (g >> 28) & 0xFFFFF;
+	  bpp = fmt == 27 ? 4 : fmt == 7 ? 2 : 0;
+	  if (!bpp || (g & 0xFF) || addr < base)
+	    return 0;
+	  for (uint32_t y = 0; y < 64 && row * 64 + y < h; y++)
+	    for (uint32_t x = 0; x < 64 && col * 64 + x < w; x++)
+	      {
+		uint32_t off = addr - base + (row * 64 + y) * stride + (col * 64 + x) * bpp;
+		if (off + bpp > sizeof fb2d)
+		  return 0;
+		const uint8_t *tp = tile + (y * 64 + x) * 4;
+		if (op == 30)
+		  memcpy (tile + (y * 64 + x) * 4, fb2d + off, bpp);
+		else if (rgba && bpp == 2)	/* RGBA8 to BGR565, rounded */
+		  {
+		    uint16_t v = (uint16_t) (((tp[0] * 31 + 127) / 255) << 11
+					     | ((tp[1] * 63 + 127) / 255) << 5
+					     | (tp[2] * 31 + 127) / 255);
+		    memcpy (fb2d + off, &v, 2);
+		  }
+		else
+		  memcpy (fb2d + off, tp, bpp);
+	      }
+	  i += 13;
+	  break;
+	case 26: case 27: i += 1; break;
+	case 13: return i + 1 == len;
+	default: return 0;
+	}
+    }
+  return 0;
+}
+
+static void
+test_017_exec (void)
+{
+  static uint8_t cl[128 * 1024];
+  uint32_t seed = 1, bad = 0, runs = 0;
+  for (int bpp = 2; bpp <= 4; bpp += 2)
+    for (int t = 0; t < 400; t++)
+      {
+	seed = seed * 1103515245u + 12345u;
+	uint32_t stride = 400 * (uint32_t) bpp, rows = sizeof fb2d / stride;
+	uint32_t w = 1 + (seed >> 8) % 300, h = 1 + (seed >> 3) % 150;
+	seed = seed * 1103515245u + 12345u;
+	int near = t & 1;		/* half overlap: shifts under a tile */
+	uint32_t sx = (seed >> 4) % (400 - w + 1), sy = (seed >> 12) % (rows - h + 1);
+	seed = seed * 1103515245u + 12345u;
+	int32_t ddx = near ? (int32_t) ((seed >> 5) % 81) - 40 : (int32_t) ((seed >> 5) % 400) - (int32_t) sx;
+	int32_t ddy = near ? (int32_t) ((seed >> 15) % 81) - 40 : (int32_t) ((seed >> 15) % rows) - (int32_t) sy;
+	int32_t dx = (int32_t) sx + ddx, dy = (int32_t) sy + ddy;
+	if (dx < 0) dx = 0;
+	if (dy < 0) dy = 0;
+	if ((uint32_t) dx + w > 400) dx = (int32_t) (400 - w);
+	if ((uint32_t) dy + h > rows) dy = (int32_t) (rows - h);
+	for (uint32_t i = 0; i < sizeof fb2d; i++)
+	  fb2d[i] = (uint8_t) (i * 7 + i / 255);
+	memcpy (want2d, fb2d, sizeof fb2d);
+	static uint8_t tmp[sizeof fb2d];
+	for (uint32_t y = 0; y < h; y++)
+	  memcpy (tmp + y * w * bpp, want2d + (sy + y) * stride + sx * bpp, w * bpp);
+	for (uint32_t y = 0; y < h; y++)
+	  memcpy (want2d + (dy + y) * stride + dx * bpp, tmp + y * w * bpp, w * bpp);
+	int overlap = sx < (uint32_t) dx + w && (uint32_t) dx < sx + w && sy < (uint32_t) dy + h && (uint32_t) dy < sy + h;
+	uint32_t order = overlap ? (((uint32_t) dx > sx ? V3D_2D_COLS_DESCENDING : 0)
+				    | ((uint32_t) dy > sy ? V3D_2D_ROWS_DESCENDING : 0)) : 0;
+	uint32_t base = 0x00400000;
+	uint32_t len = v3d_2d_copy_rcl (cl, sizeof cl, 0, 0x1000, base + sy * stride + sx * bpp,
+					base + (uint32_t) dy * stride + (uint32_t) dx * bpp, stride, w, h,
+					bpp == 4 ? 27 : 7, order);
+	runs++;
+	if (!len || !exec_2d (cl, len, base) || memcmp (fb2d, want2d, sizeof fb2d))
+	  {
+	    if (bad++ < 5)
+	      printf ("  2D copy %ux%u (%u,%u)->(%d,%d) %dbpp order %u wrong\n", w, h, sx, sy, dx, dy, bpp * 8, order);
+	  }
+      }
+  CHECK (bad == 0);
+  printf ("  2D copies carried out: %u, %u wrong\n", runs, bad);
+  /* the order matters: scrolling down by 1 with the rows ascending is wrong */
+  for (uint32_t i = 0; i < sizeof fb2d; i++)
+    fb2d[i] = (uint8_t) i;
+  uint32_t len = v3d_2d_copy_rcl (cl, sizeof cl, 0, 0x1000, 0x400000, 0x400000 + 1600, 1600,
+				  100, 100, 27, 0);
+  memcpy (want2d, fb2d, sizeof fb2d);
+  memmove (want2d + 1600, want2d, 1600 * 100);
+  CHECK (exec_2d (cl, len, 0x400000) && memcmp (fb2d, want2d, sizeof fb2d) != 0);
+  /* and too small a buffer gives 0 */
+  CHECK (v3d_2d_copy_rcl (cl, 100, 0, 0x1000, 0, 0, 1600, 400, 400, 27, 0) == 0);
+}
+
+/* (0.17) solid fills: the list carried out against a CPU fill, at both
+   depths; every 16bpp colour survives the widening to RGBA8 and back */
+static void
+test_017_fill (void)
+{
+  static uint8_t cl[128 * 1024];
+  uint32_t seed = 7, bad = 0, runs = 0;
+  for (int bpp = 2; bpp <= 4; bpp += 2)
+    for (int t = 0; t < 300; t++)
+      {
+	seed = seed * 1103515245u + 12345u;
+	uint32_t stride = 400 * (uint32_t) bpp, rows = sizeof fb2d / stride;
+	uint32_t w = 1 + (seed >> 8) % 400, h = 1 + (seed >> 3) % rows;
+	seed = seed * 1103515245u + 12345u;
+	uint32_t x = (seed >> 4) % (400 - w + 1), y = (seed >> 12) % (rows - h + 1);
+	seed = seed * 1103515245u + 12345u;
+	uint32_t pixel = bpp == 4 ? seed : (seed >> 9) & 0xFFFF;
+	for (uint32_t i = 0; i < sizeof fb2d; i++)
+	  fb2d[i] = (uint8_t) (i * 13 + 5);
+	memcpy (want2d, fb2d, sizeof fb2d);
+	for (uint32_t yy = 0; yy < h; yy++)
+	  for (uint32_t xx = 0; xx < w; xx++)
+	    memcpy (want2d + (y + yy) * stride + (x + xx) * bpp, &pixel, bpp);
+	uint32_t base = 0x00400000;
+	uint32_t len = v3d_2d_fill_rcl (cl, sizeof cl, 0x1000, base + y * stride + x * bpp,
+					stride, w, h, bpp == 4 ? 27 : 7, v3d_2d_rgba (pixel, bpp));
+	runs++;
+	if (!len || !exec_2d (cl, len, base) || memcmp (fb2d, want2d, sizeof fb2d))
+	  if (bad++ < 5)
+	    printf ("  2D fill %ux%u at (%u,%u) %dbpp &%X wrong\n", w, h, x, y, bpp * 8, pixel);
+      }
+  CHECK (bad == 0);
+  printf ("  2D fills carried out: %u, %u wrong\n", runs, bad);
+  int exact = 1;
+  for (uint32_t v = 0; v < 65536; v++)
+    {
+      uint32_t c = v3d_2d_rgba (v, 2);
+      uint32_t r = (c & 255) * 31 + 127, g = ((c >> 8) & 255) * 63 + 127, b = ((c >> 16) & 255) * 31 + 127;
+      if (((r / 255) << 11 | (g / 255) << 5 | b / 255) != v || c >> 24 != 255)
+	exact = 0;
+    }
+  CHECK (exact);
+  CHECK (v3d_2d_rgba (0x12345678, 4) == 0x12345678);
+  /* a fill's list: one clearing tile, then four packets a tile */
+  uint32_t len = v3d_2d_fill_rcl (cl, sizeof cl, 0x1000, 0x400000, 7680, 200, 100, 27, 0xFF00FF);
+  CHECK (len == 52 + 21 + 2 * 4 * 19 + 1);
+}
+
 static void
 test_v71 (void)
 {
@@ -849,6 +1192,9 @@ main (void)
   test_v71 ();
   test_013 ();
   test_015 ();
+  test_017 ();
+  test_017_exec ();
+  test_017_fill ();
   test_many ();
   printf ("%d checks, %d failed\n", checks, failures);
   return failures != 0;

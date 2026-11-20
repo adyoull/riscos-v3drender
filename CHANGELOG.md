@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.17: the desktop's copies and fills on the GPU (20 November 2026)
+
+The owner asked for Rob Heaton's V3DDriver 2D acceleration inside V3DRender, since the two can't share the GPU. V3DRender now does it itself, written again after V3DDriver (GPL-2.0-or-later; see NOTICE 3), through V3DRender's own queues. **Off by default.**
+
+- **GraphicsV 13 (Render), op 1, copies:** window moves, scrolls and `OS_Plot` block copies. Each one is a single render job: for each 64x64 tile, load the tile buffer from the source and store it to the destination. There's no binning and no shaders. Overlapping copies (scrolls) take one pass, visiting the tiles ahead of the move first (Rob's order).
+- **Op 2, solid fills:** taken when every ECF line's OR is all ones and every EOR is the same, which is how `GCOL 0` fills look. The tile buffer is cleared to the colour once, on the first tile (Rob's clear packets); every tile then only stores it. With nothing loaded, the buffer keeps the colour, so this needs half the packets of V3DDriver's clear-and-store for each tile. Patterned fills and other GCOL actions are left to the CPU.
+- **Rob's measured limits:**
+  - copies need 2,048 bytes and 16 rows;
+  - fills need 16,384 bytes, 32 rows, and `bytes + 15 x rows >= 4,500 x tiles`;
+  - anything smaller is left to the CPU, which is quicker there.
+  - 32bpp is RGBA8 (format 27); the Pi's 16bpp is BGR565 (format 7). At 16bpp a fill colour is widened to 8 bits a channel the way Rob does it, which narrows back exactly.
+- **Through V3DRender's scheduler:** a copy or fill never meets a program's 3D job on the hardware. While a program has GPU work queued or running, the desktop work is left to the CPU rather than waiting behind it. The framestore (GraphicsV 9) is mapped into the GPU's MMU once a mode, from its 1 MB boundary, so it uses 1 MB entries. The lists go into one 128 KB buffer kept for good, so nothing is claimed or zeroed per copy.
+- **Left to the CPU** when:
+  - hardware acceleration is turned off (`OS_ScreenMode 4` bit 2);
+  - the screen is cached by the CPU (dynamic area 2 is cacheable): the GPU would miss what is still in the cache;
+  - the VDU draws to a bank the display isn't showing, unless GraphicsV 6 said where;
+  - interrupts are off, or the screen isn't 16 or 32bpp.
+  The mapping is forgotten at GraphicsV 2 and `Service_PreModeChange`. The bank is followed through GraphicsV 6 (R0 = 3). Driver 0, head 0 only. A GPU failure turns 2D off, as V3DDriver does: everything is passed on from then. GraphicsV is released only by `*V3DRender 2D off` or finalisation, not inside its own call while the kernel walks its claimants.
+- **Turning it on:**
+  - `*V3DRender 2D on` waits for each copy;
+  - `*V3DRender 2D async` doesn't wait, and honours GraphicsV's "synchronise" flags. Experimental: a program that reads the screen directly without asking could see it before the GPU is done.
+  - `*V3DRender 2D off`; `*V3DRender 2D fills on|off`.
+  - At load: the option `2D` or `2DAsync`, or `V3DRender$2D` set to `on` or `async`.
+- **Not waited for, four lists in flight:** the buffer is split in four, so up to four copies and fills queue on the GPU while the CPU goes on. A fifth waits for the first four. A list too big for a quarter (a screen of more than about 1,000 tiles) waits for all of them and uses the whole buffer.
+- **`*V3DRender`** shows the 2D state and the reason the screen can't be used, if any. It shows the copies and fills by the GPU out of those offered (scrolls, small, patterned), the GPU's tiles, time and waits, and what was left to the CPU and why.
+- **Faster submits for every program:** a job's list of BOs is kept in the job itself when there are up to 48 of them, so most submits no longer claim and free RMA (Mesa's jobs usually have fewer than 48 BOs).
+- The 2D file belongs to V3DRender: it isn't counted in `V3DRender_Info` r6, `*V3DPower cycle`'s check or the "Files open" line. `*V3DReset all` closes it with the rest, and it is opened again.
+- **Tests:**
+  - **sim 2060 checks:**
+    - mapping (1 MB entries) and bounds;
+    - the job is render-only;
+    - 800 random copies at both depths and 600 random fills, carried out tile by tile and compared with the CPU's result, so overlapping copies must equal memmove in every direction;
+    - every 16bpp colour survives the widening;
+    - the four-list ring, a fifth waiting, and a list bigger than a quarter;
+    - declined while a 3D job runs; a reset fails the wait.
+  - **`test/host/cl2d.py`** decodes the copy, scroll, 16bpp and fill lists with Mesa's `v3d_packet.xml` and checks every packet, tile order and address.
+  - **Emulator 49411:**
+    - GraphicsV claimed and released;
+    - small copies, head 1 and other reasons passed on, and claims return with r4 = 0;
+    - the list in the buffer reads the framestore through the GPU's MMU;
+    - both banks, a cached screen and acceleration off;
+    - `Service_PreModeChange` unmaps;
+    - solid, patterned, partial and small fills;
+    - a copy the GPU hangs on: reset, 2D stops itself and passes everything on, with GraphicsV still claimed until `*V3DRender 2D off`;
+    - the commands and the status lines.
+- **Kit 20:** `Desk2D` (which runs the BASIC `Draw2D`) draws each copy and fill on part of the screen twice, with acceleration off (the CPU) and with 2D on. It checks the two are the same, times both 100 times, and does the same not waited for. It writes `Results2D`. Check loads 0.17.
+
 ## 0.16: allocated SWI chunk and error block (18 November 2026)
 
 RISC OS Open allocated V3DRender's numbers. This is the only change.

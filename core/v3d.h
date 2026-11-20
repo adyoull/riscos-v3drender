@@ -62,6 +62,7 @@ enum v3d_bank { V3D_BANK_HUB, V3D_BANK_CORE0, V3D_BANK_SMS, V3D_BANK_BRIDGE, V3D
 #define V3D_MAX_BOS 8192
 #define V3D_MAX_JOBS 256
 #define V3D_MAX_JOB_BOS 4096
+#define V3D_JOB_FEW_BOS 48		/* BO lists this short are kept in the job */
 #define V3D_MAX_SYNC_FILES 256
 #define V3D_OVERFLOW_BYTES (256u * 1024)	/* as Linux */
 #define V3D_OVERFLOW_POOL 16
@@ -92,6 +93,7 @@ struct v3d_job
     struct drm_v3d_submit_csd csd;
   } a;
   uint16_t *bos;			/* BOs held (references) */
+  uint16_t few[V3D_JOB_FEW_BOS];	/* (0.17) bos, when that's enough: no RMA claim */
   uint32_t nbos;
   uint16_t overflow[V3D_JOB_OVERFLOWS];	/* binner overflow BOs (render jobs) */
   uint32_t noverflow;
@@ -199,6 +201,19 @@ struct v3d_dev
   int dumped;				/* the first hang's dump is taken */
   int reset_asked;			/* v3d_cancel_all's reset (0.10): for the log */
   uint32_t place_at;			/* (0.13) the next BO's first page, for the kit's replay (0: none) */
+  struct v3d_2d
+  {
+    int file;				/* (0.17) the desktop's copies: its own file, -1 none */
+    uint32_t cl_handle, cl_gpu, cl_bytes;
+    uint8_t *cl_cpu;
+    uint32_t scr_handle, scr_gpu;	/* the framestore, mapped for the GPU */
+    uint64_t scr_pa;			/* its first byte (scr_gpu's) */
+    uint32_t scr_bytes;
+    uint32_t pending;			/* jobs left running (async), up to V3D_2D_SLOTS */
+    uint32_t slot;			/* the next list's part of the buffer */
+    uint32_t copies, scrolls, fills, tiles, busy, failed, waits;
+    uint64_t ns;			/* CPU time from submit to done */
+  } twod;
 };
 
 /* Errors are Linux's errno values, negated. */
@@ -265,6 +280,41 @@ int64_t v3d_now_ns (void);
 int v3d_bo_create (struct v3d_dev *v3d, uint32_t bytes, int *bo_out);
 int v3d_bo_create_cached (struct v3d_dev *v3d, uint32_t bytes, int cached, int *bo_out);
 int v3d_bo_import (struct v3d_dev *v3d, uintptr_t cpu, uint32_t bytes, int *bo_out);
+int v3d_bo_import_phys (struct v3d_dev *v3d, uint64_t pa, uint32_t bytes, int *bo_out);
+
+/* (0.17) the desktop's rectangle copies (v3d_2d.c) */
+#define V3D_2D_COLS_DESCENDING 1u	/* tile order, for overlapping copies */
+#define V3D_2D_ROWS_DESCENDING 2u
+struct v3d_2d_copy
+{
+  uint32_t src, dst;			/* byte offsets from the mapped framestore's start */
+  uint32_t stride;			/* bytes a row */
+  uint32_t width, height;		/* pixels */
+  uint32_t bytes_pp;			/* 4 (RGBA8) or 2 (BGR565) */
+  uint32_t order;			/* V3D_2D_*_DESCENDING */
+  int wait;				/* 0: leave it running (async) */
+};
+struct v3d_2d_fill
+{
+  uint32_t dst, stride, width, height, bytes_pp;
+  uint32_t pixel;			/* the screen's pixel value (32 or 16 bits) */
+  int wait;
+};
+#define V3D_2D_SLOTS 4u			/* lists in flight at once (async) */
+int v3d_2d_start (struct v3d_dev *v3d);
+void v3d_2d_stop (struct v3d_dev *v3d);
+int v3d_2d_screen (struct v3d_dev *v3d, uint64_t pa, uint32_t bytes);
+void v3d_2d_forget_screen (struct v3d_dev *v3d);
+int v3d_2d_copy (struct v3d_dev *v3d, const struct v3d_2d_copy *c);
+int v3d_2d_sync (struct v3d_dev *v3d);
+int v3d_2d_fill (struct v3d_dev *v3d, const struct v3d_2d_fill *f);
+uint32_t v3d_2d_copy_rcl (uint8_t *cl, uint32_t cap, uint32_t gpu_base, uint32_t tile_list,
+			  uint32_t src, uint32_t dst, uint32_t stride,
+			  uint32_t width, uint32_t height, uint32_t format, uint32_t order);
+uint32_t v3d_2d_fill_rcl (uint8_t *cl, uint32_t cap, uint32_t tile_list, uint32_t dst,
+			  uint32_t stride, uint32_t width, uint32_t height, uint32_t format,
+			  uint32_t rgba);
+uint32_t v3d_2d_rgba (uint32_t pixel, uint32_t bytes_pp);	/* the clear colour */
 uint64_t v3d_bo_page_pa (struct v3d_dev *v3d, int bo, uint32_t i);
 int v3d_bo_at (struct v3d_dev *v3d, uint32_t gpu);	/* the BO holding a GPU address, or 0 */
 void v3d_bo_cpu_clean (struct v3d_dev *v3d, int bo);	/* before a job (0.11) */

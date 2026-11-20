@@ -304,10 +304,40 @@ class Pi4(Machine):
             uc.mem_write(r[1], s.encode() + b"\0")
             out(0, r[1])
             return
+        # (0.17) the desktop's side of the 2D copies
+        if base == 0x1F and r[0] == 42:           # OS_Claim GraphicsV
+            check(getattr(self, "gfxv", None) is None, "GraphicsV claimed once")
+            self.gfxv = (r[1], r[2])
+            return
+        if base == 0x20 and r[0] == 42:           # OS_Release GraphicsV
+            check(getattr(self, "gfxv", None) == (r[1], r[2]), "GraphicsV released as claimed")
+            self.gfxv = None
+            return
+        if base == 0x31:                          # OS_ReadVduVariables
+            i = 0
+            while True:
+                v = self.word(r[0] + 4 * i)
+                if v == 0xFFFFFFFF:
+                    break
+                self.set_word(r[1] + 4 * i, self.vdu[v])
+                i += 1
+            return
+        if base == 0x34 and r[9] == 42:           # OS_CallAVector GraphicsV
+            check(r[4] == 9, "only GraphicsV 9 is called")
+            out(0, self.fs[0])
+            out(1, self.fs[1])
+            out(4, 0)
+            return
+        if base == 0x65 and r[0] == 4:            # OS_ScreenMode 4: read
+            out(1, self.screen_flags)
+            return
         return super().swi(number)
 
     def dynamic_area(self, number, r, out):
         reason = r[0]
+        if reason == 2 and r[1] == 2:             # (0.17) the screen's area
+            out(4, self.screen_da_flags)
+            return
         if reason == 0 and not r[4] & (1 << 20):
             # an ordinary area (the hang dump): memory mapped at once
             n = 300 + len(self.areas)
@@ -410,7 +440,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 16 and out[8] != 0, "version 0.16, statistics in r8")
+    check(out[0] == 17 and out[8] != 0, "version 0.17, statistics in r8")
     check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
@@ -750,8 +780,198 @@ def main():
     refuses("a BCM2711 whose V3D doesn't answer", no_v3d, 0x823E03, hardware_ok=True)
 
 
+def gfxv(m, r):
+    """GraphicsV as the kernel calls a claimant: SVC mode, IRQs on, the
+    return address for a claim stacked, lr to pass the call on. Returns
+    ("claimed" | "passed", r0-r12)."""
+    from emu import STACK_BASE, STACK_SIZE
+    uc = m.uc
+    entry, r12 = m.gfxv
+    CLAIMED = RETURN + 0x300
+    sp = STACK_BASE + STACK_SIZE - 4
+    m.set_word(sp, CLAIMED)
+    for i, reg in enumerate(REGS[:13]):
+        uc.reg_write(reg, r.get(i, 0x66660000 + i))
+    uc.reg_write(REGS[12], r12)
+    uc.reg_write(UC_ARM_REG_SP, sp)
+    uc.reg_write(UC_ARM_REG_LR, RETURN)
+    uc.reg_write(UC_ARM_REG_CPSR, 0x13)
+    stop = uc.hook_add(1 << 2, lambda u, a, s, d: u.emu_stop(), begin=RETURN, end=RETURN + 0x3FF)
+    m.fault = None
+    try:
+        uc.emu_start(entry, 0, count=5_000_000)
+    finally:
+        uc.hook_del(stop)
+    if m.fault:
+        raise EmuError(m.fault)
+    pc, nsp = uc.reg_read(UC_ARM_REG_PC), uc.reg_read(UC_ARM_REG_SP)
+    o = [uc.reg_read(x) for x in REGS[:13]]
+    if pc == CLAIMED and nsp == sp + 4:
+        return "claimed", o
+    if pc == RETURN and nsp == sp:
+        return "passed", o
+    raise EmuError("GraphicsV returned to &%08X, sp &%08X" % (pc, nsp))
+
+
+def test_2d(data):
+    """(0.17) the GPU's desktop copies: GraphicsV claimed, copies taken or
+    left to the CPU, the framestore mapped, the commands and services"""
+    FS = 0x3E000000
+    m = Pi4()
+    m.vdu = {9: 5, 6: 7680, 11: 1919, 12: 1079, 0x94: 0xFE000000, 0x95: 0xFE000000, 0x96: 7680 * 1080}
+    m.fs = (FS, 16 << 20)
+    m.screen_flags = 0
+    m.screen_da_flags = 1 << 5 | 1 << 4                 # not cacheable, not bufferable
+    m.vars = {"V3DRender$2D": "async"}
+    mod = Module(m, data, 0x20010000)
+    check(initialise(mod, "NoWFI") is None, "loads with V3DRender$2D async")
+    check(getattr(m, "gfxv", None) is not None, "GraphicsV claimed")
+    if not getattr(m, "gfxv", None):
+        return
+    bo_area = [a for a in m.areas.values() if a["name"] == "V3DRender buffers"][0]
+    pt = [a for a in m.areas.values() if a["name"] == "V3DRender page table"][0]
+    P = SCRATCH + 0xA000
+
+    def copy(sx, sy, dx, dy, w, h, flags=0, head=0):
+        m.uc.mem_write(P, struct.pack("<6I", sx, sy, dx, dy, w - 1, h - 1))
+        return gfxv(m, {0: flags, 1: 1, 2: P, 4: 13 | head << 16})
+
+    how, o = gfxv(m, {4: 8})
+    check(how == "passed" and o[4] == 8, "other reasons are passed on untouched")
+    how, o = copy(0, 0, 100, 0, 10, 10)
+    check(how == "passed" and o[4] == 13, "a small copy is left to the CPU")
+    how, _ = copy(0, 0, 400, 0, 200, 100, head=1)
+    check(how == "passed", "head 1 is left alone")
+    n = len(m.started)
+    how, o = copy(40, 1079 - 109, 800, 1079 - 399, 200, 100)
+    check(how == "claimed" and o[4] == 0, "a 200x100 copy is claimed, r4 = 0")
+    check(len(m.started) == n + 1 and m.started[-1][0] == "render", "as a render job (no binning)")
+    if len(m.started) > n:
+        rcl = m.started[-1][1]
+        # the list in the 2D file's buffer: header, then the first tile's load
+        i = (rcl >> 12)
+        page = bo_area["mapped"].get(i)
+        check(page is not None, "the render list is in a buffer")
+        if page is not None:
+            va = bo_area["base"] + (rcl & ~0xFFF) + (rcl & 0xFFF)
+            b = bytes(m.uc.mem_read(va, 96))
+            w, h = struct.unpack_from("<HH", b, 2)
+            check(b[0] == 121 and (w, h) == (200, 100), "TRMC 200x100 (%d, %d)" % (w, h))
+            ld = 52 + 4                             # after the header and the first coordinates
+            check(b[52] == 124 and b[ld] == 30, "a tile, then its load")
+            addr = struct.unpack_from("<I", b, ld + 9)[0]
+            pte = m.word(pt["base"] + (addr >> 12) * 4)
+            want = FS + 10 * 7680 + 40 * 4
+            check(pte & (1 << 28) and ((pte & 0xFFFFFF) << 12) + (addr & 0xFFF) == want,
+                  "the load reads the framestore at &%X (PTE &%08X)" % (want, pte))
+    m.finish(R["INT_FRDONE"])
+    how, _ = gfxv(m, {0: 1, 1: 0, 4: 13})
+    check(how == "passed", "a no-op with synchronise: waited, passed on")
+    how, _ = copy(0, 0, 0, 1, 200, 100)
+    check(how == "claimed", "a scroll by one row is claimed")
+    m.finish(R["INT_FRDONE"])
+    # left to the CPU: hardware acceleration disabled, a cached screen
+    m.screen_flags = 4
+    how, _ = copy(0, 0, 400, 0, 200, 100)
+    check(how == "passed", "OS_ScreenMode 4 bit 2: left to the CPU")
+    m.screen_flags = 0
+    gfxv(m, {0: 3, 1: FS, 4: 6})                      # GraphicsV 6: VDU writes at the start
+    m.screen_da_flags = 0
+    how, _ = copy(0, 0, 400, 0, 200, 100)
+    check(how == "passed", "a cached screen: left to the CPU")
+    m.screen_da_flags = 1 << 5
+    gfxv(m, {0: 3, 1: FS + 7680 * 1080, 4: 6})        # the second bank
+    n = len(m.started)
+    how, _ = copy(0, 0, 400, 0, 200, 100)
+    check(how == "claimed", "the second bank is used")
+    m.finish(R["INT_FRDONE"])
+    gfxv(m, {0: 3, 1: FS + (16 << 20) - 100, 4: 6})  # off the end
+    how, _ = copy(0, 0, 400, 0, 200, 100)
+    check(how == "passed", "a bank past the framestore: left to the CPU")
+    # a mode change forgets the framestore's mapping
+    mapped = sum(1 for i in range(1024 * 1024 // 4) if m.word(pt["base"] + 4 * i) & (1 << 28)
+                 and ((m.word(pt["base"] + 4 * i) & 0xFFFFFF) << 12) == FS)
+    check(mapped == 1, "the framestore is in the GPU's MMU")
+    m.call(mod.base + mod.service, {1: 0x4D, 12: m.pw})
+    mapped = sum(1 for i in range(1024 * 1024 // 4) if m.word(pt["base"] + 4 * i) & (1 << 28)
+                 and ((m.word(pt["base"] + 4 * i) & 0xFFFFFF) << 12) == FS)
+    check(mapped == 0, "Service_PreModeChange: the framestore unmapped")
+    m.call(mod.base + mod.service, {1: 0x46, 12: m.pw})
+    how, _ = copy(0, 0, 400, 0, 200, 100)
+    check(how == "claimed", "after the mode change: mapped again, claimed")
+    m.finish(R["INT_FRDONE"])
+    out, e = mod.swi(0)
+    check(out[6] == 0, "the 2D file isn't counted as a program's")
+    m.output = ""
+    err = mod.command("V3DRender")
+    # fills: solid ones taken, patterned and small ones left
+    ECF = SCRATCH + 0xA100
+
+    def fill(l, t, r, b, ecf):
+        m.uc.mem_write(ECF, struct.pack("<16I", *ecf))
+        m.uc.mem_write(P, struct.pack("<5I", l, t, r, b, ECF))
+        return gfxv(m, {0: 0, 1: 2, 2: P, 4: 13})
+    solid = [0xFFFFFFFF, 0xFF00FF00] * 8
+    n = len(m.started)
+    how, o = fill(100, 999, 499, 700, solid)
+    check(how == "claimed" and o[4] == 0 and len(m.started) == n + 1, "a 400x300 solid fill is claimed")
+    if len(m.started) > n:
+        va = bo_area["base"] + m.started[-1][1]
+        b = bytes(m.uc.mem_read(va, 96))
+        check(b[9] == 121 and b[10] & 15 == 3 and struct.unpack_from("<I", b, 11)[0] == 0x00FF00FF,
+              "the clear colour is the pixel, ~EOR (&%08X)" % struct.unpack_from("<I", b, 11)[0])
+        st = 52 + 4 + 1
+        check(b[52] == 124 and b[st] == 29 and b[st + 1] & 15 == 8 and b[st + 13] == 25,
+              "the first tile clears the buffer")
+    m.finish(R["INT_FRDONE"])
+    how, _ = fill(100, 999, 499, 700, [0xFFFFFFFF, 0xFF00FF00, 0xFFFFFFFF, 0xFF00FF01] * 4)
+    check(how == "passed", "a patterned fill is left to the CPU")
+    how, _ = fill(100, 999, 499, 700, [0x0000FFFF, 0xFF00FF00] * 8)
+    check(how == "passed", "a fill that keeps some of the old pixels is left to the CPU")
+    how, _ = fill(100, 120, 140, 100, solid)
+    check(how == "passed", "a small fill is left to the CPU")
+    how, _ = fill(0, 1079, 1919, 1064, solid)
+    check(how == "passed", "a wide, short fill (16 rows) is left to the CPU")
+    err = mod.command("V3DRender", "2D fills off", 3)
+    how, _ = fill(100, 999, 499, 700, solid)
+    check(err is None and how == "passed", "*V3DRender 2D fills off: fills passed on")
+    err = mod.command("V3DRender", "2D fills on", 3)
+    m.output = ""
+    err = mod.command("V3DRender")
+    check(err is None and "Desktop copies (2D):   on, not waited for" in m.output
+          and "copies by the GPU:   4 of 8 (1 scrolls; 1 small)" in m.output
+          and "fills by the GPU:    1 of 5 (2 small, 2 patterned)" in m.output
+          and "1 acceleration off" in m.output, "*V3DRender shows them:\n%s" % m.output)
+    print("  " + "\n  ".join(l for l in m.output.splitlines() if "2D" in l or "by the GPU" in l
+                                or "left to" in l.lower() or "GPU work" in l))
+    err = mod.command("V3DRender", "2D off", 2)
+    check(err is None and m.gfxv is None, "*V3DRender 2D off releases GraphicsV")
+    err = mod.command("V3DRender", "2D on", 2)
+    check(err is None and m.gfxv is not None, "*V3DRender 2D on claims it again")
+    # the GPU hangs on a waited-for copy: reset, 2D stops itself, but
+    # GraphicsV stays claimed (not released inside its own call)
+    m.core[R["CT1CA"]] = 0x1234
+    how, _ = copy(0, 0, 400, 0, 200, 100)
+    check(how == "passed" and m.gfxv is not None, "a copy the GPU hung on: left to the CPU")
+    how, _ = copy(0, 0, 400, 0, 200, 100)
+    check(how == "passed", "and 2D stays off")
+    m.output = ""
+    mod.command("V3DRender")
+    check("off (stopped after the GPU failed)" in m.output and "1 errors" in m.output,
+          "*V3DRender says why: %s" % [l for l in m.output.splitlines() if "2D" in l or "errors" in l])
+    err = mod.command("V3DRender", "2D off", 2)
+    check(err is None and m.gfxv is None, "*V3DRender 2D off releases GraphicsV after a stop")
+    err = mod.command("V3DRender", "2D on", 2)
+    check(err is None and m.gfxv is not None, "and 2D on claims it again")
+    err = mod.command("V3DRender", "2D sideways", 2)
+    check(err is not None, "*V3DRender 2D sideways is refused: %s" % err)
+    err = mod.finalise()
+    check(err is None and m.gfxv is None and not m.areas, "finalised: GraphicsV released, areas gone")
+
+
 try:
     main()
+    test_2d(open(sys.argv[1], "rb").read())
 except (EmuError, UcError) as e:
     failures += 1
     print("FAIL:", e)
