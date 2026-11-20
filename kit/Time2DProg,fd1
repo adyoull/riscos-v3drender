@@ -1,0 +1,71 @@
+10 REM Time2D (run by Time2D's Obey file): where a desktop copy or fill's
+20 REM time goes, V3DRender 0.19. Each case n times with hardware acceleration
+30 REM off (the CPU), then with V3DRender's 2D on (the limits off, so the GPU
+40 REM takes every size), then a few not waited for; wall time an op, and
+50 REM V3DRender's own split (list, submit, wait). Draws on part of the screen.
+60 async%=0:o%=0
+70 ON ERROR ON ERROR OFF:PRINT REPORT$;" at ";ERL:IF o% THEN CLOSE#o%:SYS "XOS_CLI","V3DRender 2D limits":SYS "XOS_CLI","V3DRender 2D off":END
+80 DIM v% 64,q% 64
+90 v%!0=6:v%!4=12:v%!8=4:v%!12=5:v%!16=-1
+100 SYS "OS_ReadVduVariables",v%,q%
+110 stride%=q%!0:ylim%=q%!4:xe%=q%!8:ye%=q%!12
+120 SYS "OS_ScreenMode",4,-1 TO ,mflags%
+130 mflags%=mflags% AND NOT 4
+140 o%=OPENOUT("<V3DCheck$Dir>.Time2DOut")
+150 OSCLI "V3DRender 2D on"
+160 OSCLI "V3DRender 2D limits 0 1 0 1 0"
+170 PROCcase("copy 16 x 16",1,16,16,3000)
+180 PROCcase("copy 32 x 16",1,32,16,3000)
+190 PROCcase("copy 64 x 16",1,64,16,3000)
+200 PROCcase("copy 128 x 16",1,128,16,3000)
+210 PROCcase("copy 32 x 32",1,32,32,3000)
+220 PROCcase("copy 64 x 32",1,64,32,3000)
+230 PROCcase("copy 64 x 64",1,64,64,3000)
+240 PROCcase("copy 128 x 64",1,128,64,2000)
+250 PROCcase("copy 640 x 8",1,640,8,2000)
+260 PROCcase("fill 32 x 32",2,32,32,3000)
+270 PROCcase("fill 64 x 32",2,64,32,3000)
+280 PROCcase("fill 64 x 64",2,64,64,3000)
+290 PROCcase("fill 128 x 64",2,128,64,3000)
+300 PROCcase("fill 256 x 128",2,256,128,2000)
+310 PROCcase("fill 640 x 16",2,640,16,2000)
+320 OSCLI "V3DRender 2D limits"
+330 OSCLI "V3DRender 2D async"
+340 async%=1
+350 PROCcase("async copy 512 x 320",1,512,320,300)
+360 PROCcase("async copy 64 x 64",1,64,64,3000)
+370 PROCcase("async fill 640 x 384",2,640,384,300)
+380 async%=0
+390 OSCLI "V3DRender 2D off"
+400 CLOSE#o%
+410 SYS "XWimp_ForceRedraw",-1,-&10000,-&10000,&10000,&10000
+420 END
+430 DEF PROCcase(t$,op%,w%,h%,n%)
+440 LOCAL i%,t0%,cpu%,gpu%,f%,l$
+450 SYS "ColourTrans_SetGCOL",&4080FF00,,,0,0
+460 SYS "OS_ScreenMode",4,mflags% OR 4
+470 SYS "OS_ReadMonotonicTime" TO t0%
+480 FOR i%=1 TO n%:PROCop(op%,w%,h%):NEXT
+490 SYS "OS_ReadMonotonicTime" TO cpu%:cpu%-=t0%
+500 SYS "OS_ScreenMode",4,mflags%
+510 OSCLI "V3DRender 2D zero"
+520 SYS "OS_ReadMonotonicTime" TO t0%
+530 FOR i%=1 TO n%:PROCop(op%,w%,h%):NEXT
+540 IF async% THEN SYS "OS_CallAVector",1,0,0,0,13,,,,,42
+550 SYS "OS_ReadMonotonicTime" TO gpu%:gpu%-=t0%
+560 l$=t$+" x"+STR$n%+": CPU "+STR$(cpu%*10000 DIV n%)+" us an op, GPU "+STR$(gpu%*10000 DIV n%)+" us an op (wall)"
+570 PRINT l$:BPUT#o%,l$
+580 OSCLI "Spool <V3DCheck$Dir>.Spool":OSCLI "V3DRender":OSCLI "Spool"
+590 f%=OPENIN("<V3DCheck$Dir>.Spool")
+600 WHILE NOT EOF#f%
+610  l$=GET$#f%
+620  IF INSTR(l$,"us an op") THEN BPUT#o%,l$
+630 ENDWHILE
+640 CLOSE#f%
+650 ENDPROC
+660 DEF PROCop(op%,w%,h%)
+670 x%=64<<xe%:y%=(ylim%-64-h%+1)<<ye%
+680 IF op%=1 THEN MOVE x%,y%:MOVE x%+((w%-1)<<xe%),y%+((h%-1)<<ye%):PLOT 190,x%+(600<<xe%),y%
+690 IF op%=3 THEN MOVE x%,y%:MOVE x%+((w%-1)<<xe%),y%+((h%-1)<<ye%):PLOT 190,x%,y%+(1<<ye%)
+700 IF op%=2 THEN MOVE x%,y%:PLOT 101,x%+((w%-1)<<xe%),y%+((h%-1)<<ye%)
+710 ENDPROC

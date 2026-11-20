@@ -212,6 +212,7 @@ struct v3d_dev
     uint32_t pending;			/* jobs left running (async), up to V3D_2D_SLOTS */
     uint32_t slot;			/* the next list's part of the buffer */
     uint32_t copies, scrolls, fills, tiles, busy, failed, waits;
+    uint32_t us_build, us_submit, us_wait;	/* (0.19) where the time goes */
     uint64_t ns;			/* CPU time from submit to done */
   } twod;
 };

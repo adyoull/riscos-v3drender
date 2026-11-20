@@ -31,7 +31,7 @@
 #include "plat_pi4.h"
 #include "twod.h"
 
-#define VERSION 18		/* 0.18 */
+#define VERSION 19		/* 0.19 */
 #define SWI_BASE 0x5AFC0
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -366,6 +366,25 @@ mod_final (int fatal)
 
 static uint32_t parse_dec (const char *s);
 
+/* a / b without the library's division (it needs raise) */
+static uint32_t
+div32 (uint32_t a, uint32_t b)
+{
+  uint32_t q = 0, r = 0;
+  if (!b)
+    return 0;
+  for (int i = 31; i >= 0; i--)
+    {
+      r = r << 1 | ((a >> i) & 1);
+      if (r >= b)
+	{
+	  r -= b;
+	  q |= 1u << i;
+	}
+    }
+  return q;
+}
+
 oserror *
 mod_init (const char *tail, int instance, void *pw)
 {
@@ -579,6 +598,11 @@ mod_command (int index, const char *tail, int argc)
       tail += 2;
       while (*tail == ' ')
 	tail++;
+      if ((tail[0] | 32) == 'z')		/* 2D zero: the counters (0.19) */
+	{
+	  twod_zero ();
+	  return 0;
+	}
       if ((tail[0] | 32) == 'l')		/* 2D limits [5 numbers] (0.18) */
 	{
 	  uint32_t v[5];
@@ -856,10 +880,34 @@ mod_command (int index, const char *tail, int argc)
       write_dec (twod.bank_flips);
       write0 (" bank changes");
       newline ();
-      if (twod.lim[0] != 2048 || twod.lim[1] != 16 || twod.lim[2] != 16384
-	  || twod.lim[3] != 32 || twod.lim[4] != 4500)
+      /* (0.19) where an op's time goes, in microseconds an op */
+      {
+	uint32_t n = twod.claimed + twod.fills_claimed, gpu_us = 0;
+	if (n)
+	  {
+	    write0 ("  us an op (claimed):  ");
+	    write_dec (div32 (twod.us_claimed, n));
+	    write0 (" in GraphicsV: list ");
+	    write_dec (div32 (dev->twod.us_build, n));
+	    write0 (", submit ");
+	    write_dec (div32 (dev->twod.us_submit, n));
+	    write0 (", wait ");
+	    write_dec (div32 (dev->twod.us_wait, n));
+	    (void) gpu_us;
+	    newline ();
+	  }
+	uint32_t left = twod.offered + twod.fills_offered - n;
+	if (left)
+	  {
+	    write0 ("  us an op (left):     ");
+	    write_dec (div32 (twod.us_left, left));
+	    newline ();
+	  }
+      }
+      if (twod.lim[0] != 1024 || twod.lim[1] != 8 || twod.lim[2] != 4096
+	  || twod.lim[3] != 16 || twod.lim[4] != 0)
 	{
-	  write0 ("  limits (not Rob's):  copies ");
+	  write0 ("  limits (changed):    copies ");
 	  write_dec (twod.lim[0]);
 	  write0 (" bytes, ");
 	  write_dec (twod.lim[1]);

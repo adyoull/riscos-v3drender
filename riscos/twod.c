@@ -30,18 +30,21 @@
 #endif
 #define GRAPHICSV		42
 
-/* Rob's measured limits (FillCopyBench, 2026-10-07): a copy smaller than
-   2,048 bytes, or of fewer than 16 rows, is quicker on the CPU. A scroll
-   (overlapping) costs the GPU the same as a copy. */
-#define MIN_COPY_BYTES	2048u
-#define MIN_COPY_ROWS	16u
-/* and for fills (FillCopyBench, 2026-10-07): 16,384 bytes and 32 rows,
-   and enough work a 64x64 tile: bytes + 15 x rows >= 4,500 x tiles (the
-   GPU pays by the tile, the CPU by the byte and the row) */
-#define MIN_FILL_BYTES	16384u
-#define MIN_FILL_ROWS	32u
+/* (0.19) The limits, measured with V3DRender on the owner's Pi 4
+   (native RISC OS 5, 1920x1200x32, ARM 1800 MHz; kit Time2D, 20 Nov 2026).
+   V3DRender's own cost an op is ~5 us (list < 1, submit 1) and a GPU job
+   ~5 us plus ~4 us a tile, so it is level with the CPU from about 16x16
+   and ahead above that; big ones are memory-bound (GPU 1.3-2x). Copies
+   from 1,024 bytes and 8 rows (Rob's V3DDriver: 2,048 and 16); fills
+   from 4,096 bytes and 16 rows, with no rule a tile (Rob's: 16,384, 32,
+   and bytes + 15 x rows >= 4,500 x tiles). *V3DRender 2D limits sets
+   others. */
+#define MIN_COPY_BYTES	1024u
+#define MIN_COPY_ROWS	8u
+#define MIN_FILL_BYTES	4096u
+#define MIN_FILL_ROWS	16u
 #define FILL_ROW_WEIGHT	15u
-#define FILL_TILE_BYTES	4500u
+#define FILL_TILE_BYTES	0u
 
 struct twod_state twod;
 
@@ -362,9 +365,17 @@ gfxv_c (uint32_t *r)
   int claimed = 0;
   uint32_t flags = r[0], op = r[1];
   if (op == 1)
-    claimed = copy ((const uint32_t *) r[2]);
+    {
+      uint64_t t0 = plat_time_ns ();
+      claimed = copy ((const uint32_t *) r[2]);
+      *(claimed ? &twod.us_claimed : &twod.us_left) += (uint32_t) (plat_time_ns () - t0) / 1000u;
+    }
   else if (op == 2 && twod.fills)
-    claimed = fill ((const uint32_t *) r[2]);
+    {
+      uint64_t t0 = plat_time_ns ();
+      claimed = fill ((const uint32_t *) r[2]);
+      *(claimed ? &twod.us_claimed : &twod.us_left) += (uint32_t) (plat_time_ns () - t0) / 1000u;
+    }
   /* Synchronise (bit 0) after a claimed op; Synchronise if unclaimed
      (bit 1) after one left to the CPU or another driver (async only:
      otherwise nothing is ever left running) */
@@ -468,14 +479,31 @@ twod_files_closed (void)
     twod_set (TWOD_OFF);
 }
 
-/* (0.18) the sizes below which the CPU does the work: Rob's (n = 0), or
+/* (0.18) the sizes below which the CPU does the work: the defaults (n = 0), or
    copy bytes, copy rows, fill bytes, fill rows, fill bytes a tile; for
    measuring where the GPU starts to win (the kit's Draw2D) */
 void
 twod_limits (const uint32_t *v, int n)
 {
-  static const uint32_t rob[5] = { MIN_COPY_BYTES, MIN_COPY_ROWS, MIN_FILL_BYTES,
+  static const uint32_t def[5] = { MIN_COPY_BYTES, MIN_COPY_ROWS, MIN_FILL_BYTES,
 				    MIN_FILL_ROWS, FILL_TILE_BYTES };
   for (int i = 0; i < 5; i++)
-    twod.lim[i] = i < n ? v[i] : rob[i];
+    twod.lim[i] = i < n ? v[i] : def[i];
+}
+
+/* (0.19) *V3DRender 2D zero: the 2D counters and times from 0 */
+void
+twod_zero (void)
+{
+  twod.offered = twod.claimed = twod.scrolls = twod.small = 0;
+  twod.irqs_off = twod.disabled = twod.no_screen = twod.errors = 0;
+  twod.fills_offered = twod.fills_claimed = twod.fills_small = twod.fills_pattern = 0;
+  twod.bank_flips = twod.us_claimed = twod.us_left = 0;
+  if (v3d)
+    {
+      struct v3d_2d *t = &v3d->twod;
+      t->copies = t->scrolls = t->fills = t->tiles = t->busy = t->failed = t->waits = 0;
+      t->ns = 0;
+      t->us_build = t->us_submit = t->us_wait = 0;
+    }
 }

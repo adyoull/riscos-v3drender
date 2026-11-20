@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.19: 2D measured on the Pi; limits from the measurements (20 November 2026)
+
+Measured on the owner's Pi 4 through TestAgent: native RISC OS 5, 1920x1200 at 32bpp, ARM at 1800 MHz.
+
+- **Where an op's time goes.** V3DRender's own cost is about 5 us an op: building the list under 1 us, submitting 1 us, the checks the rest. A GPU job costs about 5 us plus about 4 us a 64x64 tile; the clock (250 or 500 MHz) makes no difference. Large copies and fills are memory-bound, and the GPU is 1.3 to 2 times the CPU, which copies the screen at about 4 GB/s itself.
+- **Not waited for (async):** a claimed op costs the caller 4 to 7 us, whatever its size.
+- **New default limits, from the measurements.** The GPU is level with the CPU at 16x16 and ahead from there, so:
+  - copies from 1,024 bytes and 8 rows (Rob's V3DDriver used 2,048 and 16);
+  - fills from 4,096 bytes and 16 rows, with no rule per tile (Rob's used 16,384, 32, and `bytes + 15 x rows >= 4,500 x tiles`).
+  - `*V3DRender 2D limits` with no numbers now goes back to these.
+- **`*V3DRender`** shows the time per claimed op: in GraphicsV, list, submit and wait, in microseconds. It also shows the time per op left to the CPU. The core keeps `us_build`, `us_submit` and `us_wait`.
+- **`*V3DRender 2D zero`** sets the 2D counters and times back to 0.
+- **Kit 22:**
+  - Time2D (Obey, runs Time2DProg) times 15 sizes of copy and fill on the CPU and on the GPU, with the limits off, plus three not waited for. It writes the wall time per op and V3DRender's split to Time2DOut.
+  - Draw2D's labels no longer say which sizes the CPU takes.
+  - Check, Desk2D and Time2D need 0.19.
+- **Tests:** emulator 49443 checks:
+  - a 32x32 copy is claimed under the new limits and a 15x15 one isn't;
+  - the timing line;
+  - `2D zero`.
+
 ## 0.18: faster desktop 2D (20 November 2026)
 
 The owner asked for the 2D work to be optimised wherever possible.

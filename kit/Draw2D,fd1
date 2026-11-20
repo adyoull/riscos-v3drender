@@ -1,4 +1,4 @@
-10 REM Draw2D (run by Desk2D): V3DRender 0.18's desktop copies and fills, on this screen.
+10 REM Draw2D (run by Desk2D): V3DRender 0.19's desktop copies and fills, on this screen.
 20 REM Each copy and fill is drawn twice on a patterned part of the screen:
 30 REM once with hardware acceleration off (the CPU's result), once with
 40 REM V3DRender's 2D on; the two must be the same. Then timings, the same
@@ -15,7 +15,7 @@
 150 SYS "OS_Module",18,"V3DRender"
 160 SYS "V3DRender_Info" TO ver%
 170 PROCsay("Desk2D: V3DRender "+STR$(ver%DIV100)+"."+RIGHT$("0"+STR$(ver%MOD100),2)+"'s desktop copies and fills")
-180 IF ver%<18 THEN PROCsay("  FAIL  needs V3DRender 0.18"):PROCend
+180 IF ver%<19 THEN PROCsay("  FAIL  needs V3DRender 0.19"):PROCend
 190 DIM v% 64,q% 64
 200 v%!0=9:v%!4=6:v%!8=11:v%!12=12:v%!16=4:v%!20=5:v%!24=148:v%!28=-1
 210 SYS "OS_ReadVduVariables",v%,q%
@@ -52,7 +52,7 @@
 520 PROCtime("fill 256 x 256", 2, 0,0, 256,256, &4080FF,0)
 530 PROCtime("fill 128 x 128", 2, 0,0, 128,128, &808080,0)
 540 PROCsay("")
-550 PROCsay("4. Where the GPU starts to win: Rob's limits off, each 500 times")
+550 PROCsay("4. Where the GPU starts to win: the limits off, each 500 times")
 560 OSCLI "V3DRender 2D limits 0 1 0 1 0"
 570 n%=500
 580 PROCtime("copy 32 x 16", 1, 0,0, 32,16, 100,100)
@@ -94,11 +94,11 @@
 940 PROCcopy("scroll 300 x 300 up 64, left 64", 64,64, 300,300, 0,0)
 950 PROCcopy("64 x 16 (the fewest rows the GPU takes)", 10,300, 64,16, 300,300)
 960 PROCcopy("odd edges: 129 x 77 from 1,3 to 6,250", 1,3, 129,77, 6,250)
-970 PROCcopy("30 x 30 (the CPU's)", 0,0, 30,30, 100,100)
+970 PROCcopy("30 x 30", 0,0, 30,30, 100,100)
 980 PROCfill("300 x 200 orange", 100,50, 300,200, &4080FF00)
 990 PROCfill("640 x 384 grey", 0,0, 640,384, &80808000)
 1000 PROCfill("101 x 99 at 7,9 teal", 7,9, 101,99, &80800000)
-1010 PROCfill("512 x 32 green (left to the CPU: too thin)", 0,0, 512,32, &00FF0000)
+1010 PROCfill("512 x 32 green", 0,0, 512,32, &00FF0000)
 1020 PROCfill("64 x 64 white", 200,200, 64,64, &FFFFFF00)
 1030 ENDPROC
 1040 DEF PROCcopy(t$,sx%,sy%,w%,h%,dx%,dy%)

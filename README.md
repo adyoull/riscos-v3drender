@@ -185,9 +185,11 @@ default**:
   GraphicsV's "synchronise" flags (experimental: a program reading the
   screen directly could see it unfinished).
 - `*V3DRender 2D off`; `*V3DRender 2D fills on|off` for fills alone.
-- `*V3DRender 2D limits [5 numbers]` (0.18): the copy bytes, copy rows,
-  fill bytes, fill rows and fill bytes a tile below which the CPU does
-  the work (no numbers: Rob's 2048, 16, 16384, 32, 4500).
+- `*V3DRender 2D limits [5 numbers]`: the copy bytes, copy rows, fill
+  bytes, fill rows and fill bytes a tile below which the CPU does the
+  work. No numbers gives the defaults measured on a Pi 4 in 0.19: 1024,
+  8, 4096, 16, 0 (Rob's V3DDriver used 2048, 16, 16384, 32, 4500).
+- `*V3DRender 2D zero` (0.19): the 2D counters and times back to 0.
 - At load: the `2D` or `2DAsync` option, or `*Set V3DRender$2D on`
   (or `async`) before V3DRender loads.
 

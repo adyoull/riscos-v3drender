@@ -441,7 +441,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 18 and out[8] != 0, "version 0.18, statistics in r8")
+    check(out[0] == 19 and out[8] != 0, "version 0.19, statistics in r8")
     check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
@@ -945,8 +945,8 @@ def test_2d(data):
     check(how == "passed", "a fill that keeps some of the old pixels is left to the CPU")
     how, _ = fill(100, 120, 140, 100, solid)
     check(how == "passed", "a small fill is left to the CPU")
-    how, _ = fill(0, 1079, 1919, 1064, solid)
-    check(how == "passed", "a wide, short fill (16 rows) is left to the CPU")
+    how, _ = fill(0, 1079, 1919, 1072, solid)
+    check(how == "passed", "a wide, short fill (8 rows) is left to the CPU")
     # (0.18) the limits: lowered, a small copy goes to the GPU; reset
     err = mod.command("V3DRender", "2D limits 0 1 0 1 0", 7)
     how, _ = copy(0, 0, 100, 0, 10, 10)
@@ -954,11 +954,21 @@ def test_2d(data):
     m.finish(R["INT_FRDONE"])
     m.output = ""
     mod.command("V3DRender")
-    check("limits (not Rob's):  copies 0 bytes, 1 rows" in m.output, "*V3DRender shows changed limits")
+    check("limits (changed):    copies 0 bytes, 1 rows" in m.output, "*V3DRender shows changed limits")
     check(mod.command("V3DRender", "2D limits 1 2 3", 5) is not None, "three limits refused")
     err = mod.command("V3DRender", "2D limits", 2)
     how, _ = copy(0, 0, 100, 0, 10, 10)
-    check(err is None and how == "passed", "*V3DRender 2D limits: Rob's again")
+    check(err is None and how == "passed", "*V3DRender 2D limits: the defaults again")
+    # (0.19) measured limits: a 32x32 copy is the GPU's, a 16x16 one the CPU's
+    how, _ = copy(0, 0, 100, 0, 32, 32)
+    check(how == "claimed", "0.19's limits: a 32x32 copy is claimed")
+    m.finish(R["INT_FRDONE"])
+    how, _ = copy(0, 0, 100, 0, 15, 15)
+    check(how == "passed", "0.19's limits: a 15x15 copy is left to the CPU")
+    m.output = ""
+    mod.command("V3DRender")
+    check(re.search(r"us an op \(claimed\): +\d+ in GraphicsV: list \d+, submit \d+, wait \d+", m.output),
+          "*V3DRender shows where an op's time goes")
     err = mod.command("V3DRender", "2D fills off", 3)
     how, _ = fill(100, 999, 499, 700, solid)
     check(err is None and how == "passed", "*V3DRender 2D fills off: fills passed on")
@@ -966,7 +976,7 @@ def test_2d(data):
     m.output = ""
     err = mod.command("V3DRender")
     check(err is None and "Desktop copies (2D):   on, not waited for" in m.output
-          and "copies by the GPU:   8 of 13 (1 scrolls; 2 small)" in m.output
+          and "copies by the GPU:   9 of 15 (1 scrolls; 3 small)" in m.output
           and "fills by the GPU:    1 of 5 (2 small, 2 patterned)" in m.output
           and "1 acceleration off" in m.output, "*V3DRender shows them:\n%s" % m.output)
     print("  " + "\n  ".join(l for l in m.output.splitlines() if "2D" in l or "by the GPU" in l
@@ -975,6 +985,10 @@ def test_2d(data):
     check(err is None and m.gfxv is None, "*V3DRender 2D off releases GraphicsV")
     err = mod.command("V3DRender", "2D on", 2)
     check(err is None and m.gfxv is not None, "*V3DRender 2D on claims it again")
+    err = mod.command("V3DRender", "2D zero", 2)
+    m.output = ""
+    mod.command("V3DRender")
+    check(err is None and "copies by the GPU" not in m.output, "*V3DRender 2D zero: counters from 0")
     # the GPU hangs on a waited-for copy: reset, 2D stops itself, but
     # GraphicsV stays claimed (not released inside its own call)
     m.core[R["CT1CA"]] = 0x1234

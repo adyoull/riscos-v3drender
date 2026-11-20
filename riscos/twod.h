@@ -32,12 +32,14 @@ struct twod_state
   int mapped;				/* screen() got as far as mapping it */
   uint32_t bank_flips;
   uint32_t lim[5];			/* (0.18) *V3DRender 2D limits */
+  uint32_t us_claimed, us_left;		/* (0.19) in GraphicsV: ops claimed, ops left */
   uint32_t fills_offered, fills_claimed, fills_small, fills_pattern;
 };
 extern struct twod_state twod;
 
 struct v3d_dev;
 void twod_limits (const uint32_t *v, int n);
+void twod_zero (void);
 void twod_init (struct v3d_dev *dev, void *pw);
 oserror *twod_set (int mode);
 void twod_final (void);

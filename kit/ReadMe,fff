@@ -1,3 +1,12 @@
+V3DRender 0.19: kit 22
+======================
+
+0.19 sets the desktop 2D limits from measurements on a Pi 4, and
+*V3DRender shows where each op's time goes. New: Time2D times copies
+and fills on the CPU and the GPU (about 3 minutes; press Space at the
+end) and writes Time2DOut. Run Check, Desk2D and Time2D; send Results,
+Results2D and Time2DOut.
+
 V3DRender 0.18: kit 21
 ======================
 

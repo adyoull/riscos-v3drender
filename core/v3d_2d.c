@@ -423,7 +423,9 @@ v3d_2d_sync (struct v3d_dev *v3d)
   uint32_t resets = v3d->stats.resets;
   /* every list is in the one buffer: its last job is the last of ours */
   struct drm_v3d_wait_bo w = { .handle = t->cl_handle, .timeout_ns = 2000000000ull };
+  uint64_t t0 = plat_time_ns ();
   int ret = ioctl_ (v3d, t->file, DRM_IOCTL_V3D_WAIT_BO, &w);
+  t->us_wait += (uint32_t) (plat_time_ns () - t0) / 1000u;
   t->pending = 0;
   t->slot = 0;
   t->waits++;
@@ -483,7 +485,9 @@ submit (struct v3d_dev *v3d, uint32_t at, uint32_t len, int wait)
     .rcl_start = t->cl_gpu + at, .rcl_end = t->cl_gpu + at + len,
     .bo_handles = (uintptr_t) handles, .bo_handle_count = 2,
   };
+  uint64_t t0 = plat_time_ns ();
   int ret = ioctl_ (v3d, t->file, DRM_IOCTL_V3D_SUBMIT_CL, &s);
+  t->us_submit += (uint32_t) (plat_time_ns () - t0) / 1000u;
   if (ret)
     {
       t->failed++;
@@ -507,7 +511,9 @@ run (struct v3d_dev *v3d, build_fn *build, const void *arg, int wait)
   if (ret)
     return ret;
   uint32_t at = t->slot * SLOT_BYTES;
+  uint64_t t0 = plat_time_ns ();
   uint32_t len = build (t, t->cl_cpu + at, SLOT_BYTES, arg);
+  t->us_build += (uint32_t) (plat_time_ns () - t0) / 1000u;
   if (!len)
     {
       if (t->pending && v3d_2d_sync (v3d))
@@ -561,7 +567,7 @@ v3d_2d_copy (struct v3d_dev *v3d, const struct v3d_2d_copy *c)
   if (c->order)
     t->scrolls++;
   t->tiles += ((c->width + TILE - 1) / TILE) * ((c->height + TILE - 1) / TILE);
-  t->ns += plat_time_ns () - t0;
+  t->ns += (uint32_t) (plat_time_ns () - t0) / 1000u;
   return ret;
 }
 
@@ -588,6 +594,6 @@ v3d_2d_fill (struct v3d_dev *v3d, const struct v3d_2d_fill *f)
     return ret;
   t->fills++;
   t->tiles += ((f->width + TILE - 1) / TILE) * ((f->height + TILE - 1) / TILE);
-  t->ns += plat_time_ns () - t0;
+  t->ns += (uint32_t) (plat_time_ns () - t0) / 1000u;
   return ret;
 }
