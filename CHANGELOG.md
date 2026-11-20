@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.18: faster desktop 2D (20 November 2026)
+
+The owner asked for the 2D work to be optimised wherever possible.
+
+- **Command lists written a word at a time.** Each tile's commands are built once and copied for every tile, changing only its position. The list buffer isn't cached by the CPU, so this means a quarter as many memory writes. A copy's tile is 32 bytes, eight word writes. A fill's tile is padded with a NOP to 20 bytes, and its clearing tile to 24, so every tile stays word-aligned. A list built at an unaligned address is still built byte by byte, and the tests check both give the same list.
+- **Bank flips are cheap.** A program that flips between two screen banks each frame tells the driver through GraphicsV 6. Before, each flip made the next copy read the VDU variables, ask GraphicsV 9 and check the screen mapping again. Now only the write position moves; the cached check on dynamic area 2 is still made. The framestore is remembered from the last full check, and a flip to the same bank costs nothing. `*V3DRender` counts bank changes.
+- **`*V3DRender 2D limits [copy-bytes copy-rows fill-bytes fill-rows fill-bytes-a-tile]`** sets the sizes below which the CPU does the work; with no numbers it goes back to Rob's. `*V3DRender` shows the limits when they aren't Rob's. This is for finding where the GPU starts to win on this driver, whose fills cost half the GPU commands of Rob's.
+- **Kit 21:** Draw2D adds part 4, which turns Rob's limits off and times small copies and fills (32x16 up to 256x128 and thin strips) 500 times each. It shows microseconds per operation for the CPU and the GPU; those figures will set new limits. Times now show microseconds each. Check and Desk2D need 0.18.
+- **Tests:**
+  - sim 2063: the padded lists are the same built aligned and unaligned, and too small a buffer gives 0;
+  - cl2d.py: the fill's NOP padding;
+  - emulator 49435: three bank flips with no GraphicsV 9 call, each reading its own bank; a cached screen noticed at a bank change; lowered limits taking a 10x10 copy, three numbers refused, and the reset.
+
 ## 0.17: the desktop's copies and fills on the GPU (20 November 2026)
 
 The owner asked for Rob Heaton's V3DDriver 2D acceleration inside V3DRender, since the two can't share the GPU. V3DRender now does it itself, written again after V3DDriver (GPL-2.0-or-later; see NOTICE 3), through V3DRender's own queues. **Off by default.**

@@ -1003,7 +1003,7 @@ exec_2d (const uint8_t *cl, uint32_t len, uint32_t base)
 	      }
 	  i += 13;
 	  break;
-	case 26: case 27: i += 1; break;
+	case 26: case 27: case 1: i += 1; break;	/* (1: NOP, padding) */
 	case 13: return i + 1 == len;
 	default: return 0;
 	}
@@ -1114,7 +1114,17 @@ test_017_fill (void)
   CHECK (v3d_2d_rgba (0x12345678, 4) == 0x12345678);
   /* a fill's list: one clearing tile, then four packets a tile */
   uint32_t len = v3d_2d_fill_rcl (cl, sizeof cl, 0x1000, 0x400000, 7680, 200, 100, 27, 0xFF00FF);
-  CHECK (len == 52 + 21 + 2 * 4 * 19 + 1);
+  CHECK (len == 52 + 24 + 2 * 4 * 20 + 1);
+  /* (0.18) built from an odd address, byte by byte: the same list */
+  static uint8_t odd[4096 + 1];
+  CHECK (v3d_2d_fill_rcl (odd + 1, 4096, 0x1000, 0x400000, 7680, 200, 100, 27, 0xFF00FF) == len
+	 && !memcmp (odd + 1, cl, len));
+  uint32_t lc = v3d_2d_copy_rcl (cl, sizeof cl, 0, 0x1000, 0x400000, 0x500000, 7680, 300, 200, 27, 3);
+  CHECK (lc == 52 + 5 * 4 * 32 + 1 && v3d_2d_copy_rcl (odd + 1, 4096, 0, 0x1000, 0x400000, 0x500000,
+							7680, 300, 200, 27, 3) == lc
+	 && !memcmp (odd + 1, cl, lc));
+  CHECK (v3d_2d_copy_rcl (cl, lc - 1, 0, 0x1000, 0x400000, 0x500000, 7680, 300, 200, 27, 3) == 0
+	 && v3d_2d_fill_rcl (cl, len - 1, 0x1000, 0x400000, 7680, 200, 100, 27, 0) == 0);
 }
 
 static void

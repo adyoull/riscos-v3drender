@@ -83,6 +83,9 @@ def run(name, w, h, bpp, stride, src, dst, order):
 
 def fill(name, w, h, stride, dst, rgba):
     rcl = decode(open(os.path.join(d, name), "rb").read())
+    check(all(x == "NOP" for x, _, _ in rcl[12:15]) and all(x == "NOP" for x, _, _ in rcl[19::5]) and len(rcl[19::5]) == ((w + 63) // 64) * ((h + 63) // 64),
+          "%s: the padding is NOPs" % name)
+    rcl = [p for p in rcl if p[0] != "NOP"]
     n = [x for x, _, _ in rcl]
     check(n[1] == "Tile Rendering Mode Cfg (Clear Colors Part1)"
           and rcl[1][1]["Clear Color low 32 bits"] == rgba, "%s: clear colour" % name)

@@ -1,3 +1,11 @@
+V3DRender 0.18: kit 21
+======================
+
+0.18 makes the desktop 2D work cheaper (lists written a word at a
+time, quick screen bank changes) and Desk2D now also measures where
+the GPU starts to beat the CPU (part 4). Same steps as kit 20 below:
+run Check, then Desk2D, and send Results and Results2D.
+
 V3DRender 0.17: kit 20
 ======================
 

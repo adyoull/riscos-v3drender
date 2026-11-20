@@ -53,6 +53,7 @@ static void
 forget (void)
 {
   twod.screen_ok = 0;
+  twod.mapped = 0;
 }
 
 /* --- the screen ------------------------------------------------------ */
@@ -88,6 +89,9 @@ screen (void)
   uint32_t fs_pa = g.r[0], fs_size = g.r[1];
   if (fs_size < total || vis > fs_size)
     return twod.screen_why = TWOD_GEOMETRY;
+  twod.fs_pa = fs_pa;
+  twod.fs_size = fs_size;
+  twod.vis = (uint32_t) vis;
   /* where the VDU writes: GraphicsV 6's address if it gave one since the
      mode change (double buffering), else the framestore's start, but only
      if the VDU writes where the display shows (one bank) */
@@ -111,7 +115,38 @@ screen (void)
   if (v3d_2d_screen (v3d, fs_pa, fs_size))
     return twod.screen_why = TWOD_NO_MAP;
   twod.base_off = base - fs_pa;
+  twod.mapped = 1;
   return twod.screen_why = 0;
+}
+
+/* (0.18) GraphicsV 6: the VDU moves to another bank (a program flipping
+   between two screens, each frame). Same framestore, same mapping: only
+   where the VDU writes changes, so no VDU variables, GraphicsV 9 or
+   mapping to read again. */
+static void
+new_bank (uint32_t addr)
+{
+  if (twod.vrender_known && addr == twod.vrender)
+    return;
+  twod.vrender = addr;
+  twod.vrender_known = 1;
+  twod.bank_flips++;
+  if (!twod.screen_ok || !twod.mapped
+      || (twod.screen_why && twod.screen_why != TWOD_BANK && twod.screen_why != TWOD_CACHED))
+    {
+      forget ();
+      return;
+    }
+  regs da = {{ 2, 2 }};			/* still not cached by the CPU */
+  if (addr < twod.fs_pa || (uint64_t) (addr - twod.fs_pa) + twod.vis > twod.fs_size)
+    twod.screen_why = TWOD_BANK;
+  else if (swix_regs (OS_DynamicArea, &da) || !(da.r[4] & (1u << 5)))
+    twod.screen_why = TWOD_CACHED;
+  else
+    {
+      twod.base_off = addr - twod.fs_pa;
+      twod.screen_why = 0;
+    }
 }
 
 /* --- GraphicsV ------------------------------------------------------- */
@@ -182,10 +217,10 @@ static int
 fill_worth (uint32_t w, uint32_t h)
 {
   uint32_t bytes = (w * h) << (twod.log2bpp - 3);
-  if (h < MIN_FILL_ROWS || bytes < MIN_FILL_BYTES)
+  if (h < twod.lim[3] || bytes < twod.lim[2])
     return 0;
   uint32_t tiles = ((w + 63) >> 6) * ((h + 63) >> 6);
-  return bytes + FILL_ROW_WEIGHT * h >= tiles * FILL_TILE_BYTES;
+  return bytes + FILL_ROW_WEIGHT * h >= tiles * twod.lim[4];
 }
 
 /* GraphicsV 13 2: left, top, right, bottom (inclusive, y up), the ECF
@@ -257,7 +292,7 @@ copy (const uint32_t *p)
     return 0;
   uint32_t bytes_pp = 1u << (twod.log2bpp - 3);
   if (twod.screen_ok && !twod.screen_why
-      && (h < MIN_COPY_ROWS || (uint64_t) w * h * bytes_pp < MIN_COPY_BYTES))
+      && (h < twod.lim[1] || (uint64_t) w * h * bytes_pp < twod.lim[0]))
     {
       twod.small++;			/* the CPU is quicker */
       return 0;
@@ -265,7 +300,7 @@ copy (const uint32_t *p)
   if (!usable ())
     return 0;
   bytes_pp = 1u << (twod.log2bpp - 3);
-  if (h < MIN_COPY_ROWS || (uint64_t) w * h * bytes_pp < MIN_COPY_BYTES)
+  if (h < twod.lim[1] || (uint64_t) w * h * bytes_pp < twod.lim[0])
     {
       twod.small++;
       return 0;
@@ -311,11 +346,7 @@ gfxv_c (uint32_t *r)
   if (reason == 6)			/* SetDMAAddress: R0 = 3, where the VDU writes */
     {
       if (r[0] == 3)
-	{
-	  twod.vrender = r[1];
-	  twod.vrender_known = 1;
-	  forget ();
-	}
+	new_bank (r[1]);
       return 0;
     }
   if (reason == 2)			/* SetMode: a new framestore is coming */
@@ -372,6 +403,7 @@ twod_init (struct v3d_dev *dev, void *pw)
   v3d = dev;
   twod.pw = pw;
   twod.fills = 1;
+  twod_limits (0, 0);
 }
 
 oserror *
@@ -434,4 +466,16 @@ twod_files_closed (void)
   forget ();
   if (twod.mode != TWOD_OFF && v3d_2d_start (v3d))
     twod_set (TWOD_OFF);
+}
+
+/* (0.18) the sizes below which the CPU does the work: Rob's (n = 0), or
+   copy bytes, copy rows, fill bytes, fill rows, fill bytes a tile; for
+   measuring where the GPU starts to win (the kit's Draw2D) */
+void
+twod_limits (const uint32_t *v, int n)
+{
+  static const uint32_t rob[5] = { MIN_COPY_BYTES, MIN_COPY_ROWS, MIN_FILL_BYTES,
+				    MIN_FILL_ROWS, FILL_TILE_BYTES };
+  for (int i = 0; i < 5; i++)
+    twod.lim[i] = i < n ? v[i] : rob[i];
 }

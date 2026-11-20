@@ -31,7 +31,7 @@
 #include "plat_pi4.h"
 #include "twod.h"
 
-#define VERSION 17		/* 0.17 */
+#define VERSION 18		/* 0.18 */
 #define SWI_BASE 0x5AFC0
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -579,6 +579,29 @@ mod_command (int index, const char *tail, int argc)
       tail += 2;
       while (*tail == ' ')
 	tail++;
+      if ((tail[0] | 32) == 'l')		/* 2D limits [5 numbers] (0.18) */
+	{
+	  uint32_t v[5];
+	  int n = 0;
+	  while (*tail > ' ')
+	    tail++;
+	  for (;;)
+	    {
+	      while (*tail == ' ')
+		tail++;
+	      if (*tail < '0' || *tail > '9')
+		break;
+	      if (n == 5)
+		return ERR (err_syntax);
+	      v[n++] = parse_dec (tail);
+	      while (*tail > ' ')
+		tail++;
+	    }
+	  if (*tail >= ' ' || (n != 0 && n != 5))
+	    return ERR (err_syntax);
+	  twod_limits (v, n);
+	  return 0;
+	}
       if ((tail[0] | 32) == 'f')		/* 2D fills on|off */
 	{
 	  while (*tail > ' ')
@@ -829,8 +852,26 @@ mod_command (int index, const char *tail, int argc)
       write_dec ((uint32_t) (dev->twod.ns / 1000000u));
       write0 (" ms; waited ");
       write_dec (dev->twod.waits);
-      write0 (" times");
+      write0 (" times; ");
+      write_dec (twod.bank_flips);
+      write0 (" bank changes");
       newline ();
+      if (twod.lim[0] != 2048 || twod.lim[1] != 16 || twod.lim[2] != 16384
+	  || twod.lim[3] != 32 || twod.lim[4] != 4500)
+	{
+	  write0 ("  limits (not Rob's):  copies ");
+	  write_dec (twod.lim[0]);
+	  write0 (" bytes, ");
+	  write_dec (twod.lim[1]);
+	  write0 (" rows; fills ");
+	  write_dec (twod.lim[2]);
+	  write0 (" bytes, ");
+	  write_dec (twod.lim[3]);
+	  write0 (" rows, ");
+	  write_dec (twod.lim[4]);
+	  write0 (" a tile");
+	  newline ();
+	}
       write0 ("  left to the CPU:     ");
       write_dec (dev->twod.busy);
       write0 (" GPU busy with 3D, ");

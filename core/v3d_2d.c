@@ -243,6 +243,74 @@ general (uint32_t format, uint32_t stride)
   return (uint64_t) (format & 0x3F) << 12 | (uint64_t) (stride & 0xFFFFF) << 28;
 }
 
+/* (0.18) Tiles written a word at a time: the list's buffer is mapped
+   uncached (Normal, bufferable), where byte stores cost as much as word
+   stores; each tile's packets are built once and stamped with its
+   coordinates. A list starts 4-byte aligned, the header is 52 bytes and
+   a copy's tile 32, so every tile is aligned; a fill's tile (19 bytes)
+   and clearing tile (21) are padded with NOPs to 20 and 24. Built byte by
+   byte if cl isn't aligned (the tests' odd buffers). */
+#define COPY_TILE 32u
+#define FILL_TILE 20u
+#define CLEAR_TILE 24u
+
+static void
+put_tile (struct cl *c, const uint32_t *t, uint32_t words, uint32_t col, uint32_t row)
+{
+  uint32_t w0 = (t[0] & 0xFFu) | ((col & 0xFFF) | (row & 0xFFF) << 12) << 8;
+  if (!((uintptr_t) c->p & 3))
+    {
+      volatile uint32_t *d = (volatile uint32_t *) (void *) c->p;
+      d[0] = w0;
+      for (uint32_t i = 1; i < words; i++)
+	d[i] = t[i];
+    }
+  else
+    {
+      put (c, w0, 4);
+      for (uint32_t i = 1; i < words; i++)
+	put (c, t[i], 4);
+      c->p -= 4 * words;
+    }
+  c->p += 4 * words;
+}
+
+/* one tile's packets into t (as little-endian words), its coordinates 0 */
+static void
+template (uint32_t *t, uint32_t words, void (*fill) (struct cl *, const void *), const void *arg)
+{
+  uint8_t b[33];			/* (one more: put's overflow mark) */
+  struct cl c = { b, b + 32 };
+  for (uint32_t i = 0; i < sizeof b; i++)
+    b[i] = 1;				/* NOP */
+  fill (&c, arg);
+  for (uint32_t i = 0; i < words; i++)
+    t[i] = (uint32_t) b[4 * i] | (uint32_t) b[4 * i + 1] << 8
+      | (uint32_t) b[4 * i + 2] << 16 | (uint32_t) b[4 * i + 3] << 24;
+}
+
+struct copy_tile
+{
+  uint64_t g;
+  uint32_t src, dst;
+};
+
+static void
+copy_tile (struct cl *c, const void *arg)
+{
+  const struct copy_tile *t = arg;
+  put (c, 124, 1);			/* Tile Coordinates (stamped per tile) */
+  put (c, 0, 3);
+  put (c, 30, 1);			/* Load Tile Buffer General: the source */
+  put (c, t->g, 8);
+  put (c, t->src, 4);
+  put (c, 26, 1);			/* End of Loads */
+  put (c, 29, 1);			/* Store Tile Buffer General: the destination */
+  put (c, t->g, 8);
+  put (c, t->dst, 4);
+  put (c, 27, 1);			/* End of Tile Marker */
+}
+
 /* A copy's render list into cl (cap bytes): its length, or 0 if it
    doesn't fit. The frame is the rectangle; each tile's load and store
    address their tile from the frame's origin (src, dst), and the store
@@ -255,27 +323,54 @@ v3d_2d_copy_rcl (uint8_t *cl, uint32_t cap, uint32_t gpu_base, uint32_t tile_lis
   (void) gpu_base;
   struct cl c = { cl, cl + cap };
   uint32_t tx = (width + TILE - 1) / TILE, ty = (height + TILE - 1) / TILE;
+  if (52u + (uint64_t) tx * ty * COPY_TILE + 1 > cap)
+    return 0;
   header (&c, width, height, tile_list, 0);
-  uint64_t g = general (format, stride);
+  uint32_t t[COPY_TILE / 4];
+  struct copy_tile ct = { general (format, stride), src, dst };
+  template (t, COPY_TILE / 4, copy_tile, &ct);
   for (uint32_t ri = 0; ri < ty; ri++)
     {
       uint32_t row = (order & V3D_2D_ROWS_DESCENDING) ? ty - 1 - ri : ri;
       for (uint32_t ci = 0; ci < tx; ci++)
-	{
-	  uint32_t col = (order & V3D_2D_COLS_DESCENDING) ? tx - 1 - ci : ci;
-	  put (&c, 124, 1);		/* Tile Coordinates */
-	  put (&c, (col & 0xFFF) | (row & 0xFFF) << 12, 3);
-	  put (&c, 30, 1);		/* Load Tile Buffer General: the source */
-	  put (&c, g, 8);
-	  put (&c, src, 4);
-	  put (&c, 26, 1);		/* End of Loads */
-	  put (&c, 29, 1);		/* Store Tile Buffer General: the destination */
-	  put (&c, g, 8);
-	  put (&c, dst, 4);
-	  put (&c, 27, 1);		/* End of Tile Marker */
-	}
+	put_tile (&c, t, COPY_TILE / 4,
+		  (order & V3D_2D_COLS_DESCENDING) ? tx - 1 - ci : ci, row);
     }
   return finish (&c, cl);
+}
+
+struct fill_tile
+{
+  uint64_t g;
+  uint32_t dst;
+};
+
+static void
+clear_tile (struct cl *c, const void *arg)
+{
+  (void) arg;
+  put (c, 124, 1);			/* Tile Coordinates 0, 0 */
+  put (c, 0, 3);
+  put (c, 26, 1);			/* End of Loads */
+  put (c, 29, 1);			/* Store Tile Buffer General: none */
+  put (c, 8, 8);
+  put (c, 0, 4);
+  put (c, 25, 1);			/* Clear Tile Buffers: all render targets, Z/S */
+  put (c, 3, 1);
+  put (c, 27, 1);			/* End of Tile Marker; then NOPs to 24 */
+}
+
+static void
+fill_tile (struct cl *c, const void *arg)
+{
+  const struct fill_tile *t = arg;
+  put (c, 124, 1);
+  put (c, 0, 3);
+  put (c, 26, 1);
+  put (c, 29, 1);
+  put (c, t->g, 8);
+  put (c, t->dst, 4);
+  put (c, 27, 1);			/* then a NOP to 20 */
 }
 
 /* A solid fill's render list: the first tile clears the tile buffer to
@@ -288,28 +383,17 @@ v3d_2d_fill_rcl (uint8_t *cl, uint32_t cap, uint32_t tile_list, uint32_t dst,
 {
   struct cl c = { cl, cl + cap };
   uint32_t tx = (width + TILE - 1) / TILE, ty = (height + TILE - 1) / TILE;
+  if (52u + CLEAR_TILE + (uint64_t) tx * ty * FILL_TILE + 1 > cap)
+    return 0;
   header (&c, width, height, tile_list, rgba);
-  put (&c, 124, 1);			/* Tile Coordinates 0, 0 */
-  put (&c, 0, 3);
-  put (&c, 26, 1);			/* End of Loads */
-  put (&c, 29, 1);			/* Store Tile Buffer General: none */
-  put (&c, 8, 8);
-  put (&c, 0, 4);
-  put (&c, 25, 1);			/* Clear Tile Buffers: all render targets, Z/S */
-  put (&c, 3, 1);
-  put (&c, 27, 1);			/* End of Tile Marker */
-  uint64_t g = general (format, stride);
+  uint32_t t[CLEAR_TILE / 4];
+  template (t, CLEAR_TILE / 4, clear_tile, 0);
+  put_tile (&c, t, CLEAR_TILE / 4, 0, 0);
+  struct fill_tile ft = { general (format, stride), dst };
+  template (t, FILL_TILE / 4, fill_tile, &ft);
   for (uint32_t row = 0; row < ty; row++)
     for (uint32_t col = 0; col < tx; col++)
-      {
-	put (&c, 124, 1);
-	put (&c, (col & 0xFFF) | (row & 0xFFF) << 12, 3);
-	put (&c, 26, 1);
-	put (&c, 29, 1);
-	put (&c, g, 8);
-	put (&c, dst, 4);
-	put (&c, 27, 1);
-      }
+      put_tile (&c, t, FILL_TILE / 4, col, row);
   return finish (&c, cl);
 }
 

@@ -28,7 +28,7 @@ module_start:
 	.word	flags - module_start
 
 title:	.asciz	"V3DRender"
-help:	.asciz	"V3DRender\t0.17 (20 Nov 2026) Pi 4 GPU driver (V3D 4.2), after Linux's v3d"
+help:	.asciz	"V3DRender\t0.18 (20 Nov 2026) Pi 4 GPU driver (V3D 4.2), after Linux's v3d"
 swi_names:
 	.asciz	"V3DRender\0Info\0Open\0Close\0Ioctl\0Reset\0Debug\0"
 	.align	2
@@ -36,7 +36,7 @@ commands:
 	.asciz	"V3DRender"
 	.align	2
 	.word	cm_command_0 - module_start
-	.word	0x00030000			@ 0-3 parameters
+	.word	0x00070000			@ 0-7 parameters
 	.word	0
 	.word	cmd_help - module_start
 	.asciz	"V3DClock"
@@ -65,7 +65,7 @@ commands:
 	.word	reset_help - module_start
 	.word	0
 cmd_help:
-	.asciz	"*V3DRender shows the GPU, its memory and what it has done. *V3DRender 2D on|async|off turns the GPU's desktop copies and fills (window moves, scrolls, plain rectangles) on, on without waiting for each, or off; *V3DRender 2D fills on|off, the fills alone.\rSyntax: *V3DRender [2D on|async|off|fills on|off]"
+	.asciz	"*V3DRender shows the GPU, its memory and what it has done. *V3DRender 2D on|async|off turns the GPU's desktop copies and fills (window moves, scrolls, plain rectangles) on, on without waiting for each, or off; *V3DRender 2D fills on|off, the fills alone; *V3DRender 2D limits [copy-bytes copy-rows fill-bytes fill-rows fill-bytes-a-tile], below which the CPU does them (none: V3DDriver's).\rSyntax: *V3DRender [2D on|async|off|fills on|off|limits [5 numbers]]"
 dump_help:
 	.asciz	"*V3DDump saves what the GPU's buffers held when a job first hung since V3DRender was loaded, with its registers, for V3DRender's tools/v3ddump.py.\rSyntax: *V3DDump <file>"
 reset_help:

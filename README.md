@@ -185,6 +185,9 @@ default**:
   GraphicsV's "synchronise" flags (experimental: a program reading the
   screen directly could see it unfinished).
 - `*V3DRender 2D off`; `*V3DRender 2D fills on|off` for fills alone.
+- `*V3DRender 2D limits [5 numbers]` (0.18): the copy bytes, copy rows,
+  fill bytes, fill rows and fill bytes a tile below which the CPU does
+  the work (no numbers: Rob's 2048, 16, 16384, 32, 4500).
 - At load: the `2D` or `2DAsync` option, or `*Set V3DRender$2D on`
   (or `async`) before V3DRender loads.
 

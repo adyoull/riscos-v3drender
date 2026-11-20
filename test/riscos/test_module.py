@@ -323,6 +323,7 @@ class Pi4(Machine):
                 i += 1
             return
         if base == 0x34 and r[9] == 42:           # OS_CallAVector GraphicsV
+            self.gv9 = getattr(self, "gv9", 0) + 1
             check(r[4] == 9, "only GraphicsV 9 is called")
             out(0, self.fs[0])
             out(1, self.fs[1])
@@ -440,7 +441,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 17 and out[8] != 0, "version 0.17, statistics in r8")
+    check(out[0] == 18 and out[8] != 0, "version 0.18, statistics in r8")
     check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
@@ -875,8 +876,8 @@ def test_2d(data):
     how, _ = copy(0, 0, 400, 0, 200, 100)
     check(how == "passed", "OS_ScreenMode 4 bit 2: left to the CPU")
     m.screen_flags = 0
+    m.screen_da_flags = 0                             # (checked again at a bank change)
     gfxv(m, {0: 3, 1: FS, 4: 6})                      # GraphicsV 6: VDU writes at the start
-    m.screen_da_flags = 0
     how, _ = copy(0, 0, 400, 0, 200, 100)
     check(how == "passed", "a cached screen: left to the CPU")
     m.screen_da_flags = 1 << 5
@@ -885,6 +886,20 @@ def test_2d(data):
     how, _ = copy(0, 0, 400, 0, 200, 100)
     check(how == "claimed", "the second bank is used")
     m.finish(R["INT_FRDONE"])
+    # (0.18) flipping banks: no GraphicsV 9 or new mapping, just the bank
+    gv9 = m.gv9
+    for i in range(3):
+        gfxv(m, {0: 3, 1: FS + (i & 1) * 7680 * 1080, 4: 6})
+        how, _ = copy(0, 0, 400, 0, 200, 100)
+        check(how == "claimed", "bank flip %d: claimed" % i)
+        if how == "claimed":
+            va = bo_area["base"] + m.started[-1][1]
+            addr = struct.unpack_from("<I", bytes(m.uc.mem_read(va + 52 + 4 + 9, 4)))[0]
+            pte = m.word(pt["base"] + (addr >> 12) * 4)
+            want = FS + (i & 1) * 7680 * 1080 + 980 * 7680
+            check(((pte & 0xFFFFFF) << 12) + (addr & 0xFFF) == want, "bank flip %d reads its bank" % i)
+        m.finish(R["INT_FRDONE"])
+    check(m.gv9 == gv9, "no GraphicsV 9 for a bank flip (%d)" % (m.gv9 - gv9))
     gfxv(m, {0: 3, 1: FS + (16 << 20) - 100, 4: 6})  # off the end
     how, _ = copy(0, 0, 400, 0, 200, 100)
     check(how == "passed", "a bank past the framestore: left to the CPU")
@@ -932,6 +947,18 @@ def test_2d(data):
     check(how == "passed", "a small fill is left to the CPU")
     how, _ = fill(0, 1079, 1919, 1064, solid)
     check(how == "passed", "a wide, short fill (16 rows) is left to the CPU")
+    # (0.18) the limits: lowered, a small copy goes to the GPU; reset
+    err = mod.command("V3DRender", "2D limits 0 1 0 1 0", 7)
+    how, _ = copy(0, 0, 100, 0, 10, 10)
+    check(err is None and how == "claimed", "with the limits lowered a 10x10 copy is claimed")
+    m.finish(R["INT_FRDONE"])
+    m.output = ""
+    mod.command("V3DRender")
+    check("limits (not Rob's):  copies 0 bytes, 1 rows" in m.output, "*V3DRender shows changed limits")
+    check(mod.command("V3DRender", "2D limits 1 2 3", 5) is not None, "three limits refused")
+    err = mod.command("V3DRender", "2D limits", 2)
+    how, _ = copy(0, 0, 100, 0, 10, 10)
+    check(err is None and how == "passed", "*V3DRender 2D limits: Rob's again")
     err = mod.command("V3DRender", "2D fills off", 3)
     how, _ = fill(100, 999, 499, 700, solid)
     check(err is None and how == "passed", "*V3DRender 2D fills off: fills passed on")
@@ -939,7 +966,7 @@ def test_2d(data):
     m.output = ""
     err = mod.command("V3DRender")
     check(err is None and "Desktop copies (2D):   on, not waited for" in m.output
-          and "copies by the GPU:   4 of 8 (1 scrolls; 1 small)" in m.output
+          and "copies by the GPU:   8 of 13 (1 scrolls; 2 small)" in m.output
           and "fills by the GPU:    1 of 5 (2 small, 2 patterned)" in m.output
           and "1 acceleration off" in m.output, "*V3DRender shows them:\n%s" % m.output)
     print("  " + "\n  ".join(l for l in m.output.splitlines() if "2D" in l or "by the GPU" in l
