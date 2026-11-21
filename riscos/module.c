@@ -31,7 +31,7 @@
 #include "plat_pi4.h"
 #include "twod.h"
 
-#define VERSION 21		/* 0.21 */
+#define VERSION 22		/* 0.22 */
 #define SWI_BASE 0x5AFC0
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -86,6 +86,24 @@ irq_c (void)
   if (dev)
     v3d_irq (dev);
   call_hal (IRQ_DEVICE, hal_irqclear, hal_sb);
+}
+
+/* (0.22) why the screen can't be used, as text (a switch: the module
+   isn't relocated, so no tables of pointers) */
+static const char *
+twod_why_text (uint32_t why)
+{
+  switch (why)
+    {
+    case 1: return "VDU variables unreadable";
+    case 2: return "screen not 16 or 32bpp";
+    case 3: return "screen geometry inconsistent";
+    case 4: return "no framestore from GraphicsV 9";
+    case 5: return "VDU and display banks differ";
+    case 6: return "framestore not mappable";
+    case 7: return "screen cached by the CPU";
+    }
+  return "?";
 }
 
 /* (0.12) BO pages (not imported ones) above and below 1 GB, and in
@@ -953,11 +971,8 @@ mod_command (int index, const char *tail, int argc)
     write0 (", alongside programs");
   if (twod.mode != TWOD_OFF && twod.screen_ok && twod.screen_why)
     {
-      static const char *const why[] = { "", "VDU variables unreadable", "screen not 16 or 32bpp",
-	"screen geometry inconsistent", "no framestore from GraphicsV 9", "VDU and display banks differ",
-	"framestore not mappable", "screen cached by the CPU" };
       write0 (" (not used: ");
-      write0 (twod.screen_why < 8 ? why[twod.screen_why] : "?");
+      write0 (twod_why_text (twod.screen_why));
       write0 (")");
     }
   newline ();

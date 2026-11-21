@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.22: `*V3DRender` could abort when showing an MMU error (21 November 2026)
+
+- **The fault:** the MMU error line's client name ("L2T", "TLB", ...) and the 2D line's reason why the screen can't be used came from tables of string pointers. The module isn't relocated, so those pointers were link-time addresses.
+  - Printing one read whatever memory that was: on the owner's Pi the browser report showed "client d ãitã=".
+  - Once the browser had closed and that memory was unmapped, `*V3DRender` aborted in OS_Write0: "Internal error: abort on data transfer at &FC033AD8".
+- **The fix:** both are switches now, and no other tables of pointers are left in the module.
+- **Tests:** emulator 54099, including an MMU error (PTI, client 3, page &1234) shown as "client TLB". The old module, given the same test, reads unmapped memory.
+- **Kit 25:** as kit 24, needing 0.22.
+
 ## 0.21: no desktop 2D on the GPU while a program has it open (21 November 2026)
 
 - The web browser (Strada, WebKit compositing on the GPU into imported memory) reported that with `*V3DRender 2D on`, its GPU drawing went wrong:

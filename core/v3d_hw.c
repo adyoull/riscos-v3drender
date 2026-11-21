@@ -376,9 +376,7 @@ v3d_overflow_supply (struct v3d_dev *v3d)
   V3D_CORE_WRITE (0, V3D_PTB_BPOS, V3D_OVERFLOW_BYTES);
 }
 
-static const char *const v3d41_axi_ids[] = {
-  "L2T", "PTB", "PSE", "TLB", "CLE", "TFU", "MMU", "GMP",
-};
+
 
 /* v3d_irq and v3d_hub_irq together. The Pi 4's V3D has one interrupt
    line for both; the Pi 5's has two, and either may call this. Linux
@@ -458,7 +456,22 @@ v3d_irq (struct v3d_dev *v3d)
 const char *
 v3d_axi_client (uint32_t id)
 {
-  return id < sizeof v3d41_axi_ids / sizeof v3d41_axi_ids[0] ? v3d41_axi_ids[id] : "?";
+  /* (0.22) a switch, not a table of pointers: the module isn't
+     relocated, so a table's pointers are link-time addresses, and
+     printing one read wherever that was. *V3DRender aborted in
+     OS_Write0 on the owner's Pi (21 Nov 2026). */
+  switch (id)
+    {
+    case 0: return "L2T";
+    case 1: return "PTB";
+    case 2: return "PSE";
+    case 3: return "TLB";
+    case 4: return "CLE";
+    case 5: return "TFU";
+    case 6: return "MMU";
+    case 7: return "GMP";
+    }
+  return "?";
 }
 
 /* Enable our set of interrupts, masking out any others. */

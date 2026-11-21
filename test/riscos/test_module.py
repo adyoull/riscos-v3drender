@@ -443,7 +443,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 21 and out[8] != 0, "version 0.21, statistics in r8")
+    check(out[0] == 22 and out[8] != 0, "version 0.22, statistics in r8")
     check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
@@ -1066,6 +1066,17 @@ def test_domain_first(data):
     check(getattr(m, "domain_sets", [None])[0] == 1, "the domain turned on first (%s)" % getattr(m, "domain_sets", None))
     check(err is None, "loads (%s)" % err)
     if err is None:
+        # (0.22) an MMU error's client is named (0.21 printed through an
+        # unrelocated pointer table, and aborted in OS_Write0 on the Pi)
+        m.hub[R["HUB_INT_STS"]] = R["HUB_INT_MMU_PTI"]
+        m.hub[R["MMU_VIO_ID"]] = 3 << 5
+        m.hub[R["MMU_VIO_ADDR"]] = 0x1234
+        m.irq()
+        m.hub[R["HUB_INT_STS"]] = 0
+        m.output = ""
+        mod.command("V3DRender")
+        check("MMU errors:            1" in m.output and "last: client TLB, page address &00001234" in m.output,
+              "the MMU error's client is named: %s" % [l for l in m.output.splitlines() if "client" in l])
         mod.finalise()
 
 
