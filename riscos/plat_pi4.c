@@ -307,14 +307,24 @@ pi4_power_cycle (void)
 oserror *
 pi4_power_on (int *was_up)
 {
+  /* (0.20) The firmware's power domain BEFORE any V3D register is read.
+     pi4_v3d_is_up reads the core's IDENT0, and a read from a V3D whose
+     power domain is off can end in an asynchronous external abort,
+     reported later at whatever code is running ("Internal abort at
+     various locations": a CM4 at start-up, 21 Nov 2026). A domain the
+     firmware reports off was never turned on by V3DRender (it turns it
+     on at load and leaves it on), so nothing of ours is running on it
+     and asking for it now is safe. A firmware without the domain
+     interface answers ~0, and nothing changes. */
+  uint32_t dom;
+  if (!pi4_domain (&dom) && dom == 0)
+    {
+      pi4_set_domain (1);
+      spin (100000);
+    }
   *was_up = pi4_v3d_is_up ();
   if (*was_up)
     return 0;
-  /* the firmware's power domain first, as Linux has it before probing
-     (0.08); a firmware without the domain interface answers ~0 */
-  uint32_t dom;
-  if (!pi4_domain (&dom) && dom == 0)
-    pi4_set_domain (1);
   /* the firmware's clock first: a gated V3D takes register writes but
      its control lists never run */
   uint32_t echo, state, rate;

@@ -91,6 +91,8 @@ class Pi4(Machine):
     # -- the GPU
     def _v3d_read(self, uc, off, size, ud):
         self.touched += 1
+        if off < 0x11000 and getattr(self, "domain", 0) == 0 and getattr(self, "strict_domain", False):
+            self.read_while_off = getattr(self, "read_while_off", 0) + 1   # (0.20) would abort
         if off >= 0x11000:
             return self.asb.get(off, 0)
         if off >= 0x4000:
@@ -441,13 +443,13 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 19 and out[8] != 0, "version 0.19, statistics in r8")
+    check(out[0] == 20 and out[8] != 0, "version 0.20, statistics in r8")
     check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
     # RISC3D: registered as a DRM device; its calls open, describe, close
     d = m.risc3d
-    check(d is not None and d["flags"] == 1 and d["ioctl"] == 0x5AFC3 and d["drm"] == "v3d"
+    check(d is not None and d["flags"] == 9 and d["ioctl"] == 0x5AFC3 and d["drm"] == "v3d"
           and "RISC3D_Register" in m.swi_lookups,
           "registered with RISC3D as a DRM device (%s)" % d)
     if d:
@@ -456,6 +458,26 @@ def main():
         rf = o[0]
         o, v, _ = m.call(d["entry"], {0: 3, 12: d["r12"]})
         check(not v and o[0] == 0, "RISC3D describe -> 0, on a GPU")
+        # (0.20) reason 4: the hardware, label TAB value LF, for RISC3DSetup
+        B = SCRATCH + 0xB000
+        o, v, _ = m.call(d["entry"], {0: 4, 1: B, 2: 0, 12: d["r12"]})
+        need = o[2]
+        check(not v and 100 < need < 600, "reason 4 with no buffer gives the size (%d)" % need)
+        o, v, _ = m.call(d["entry"], {0: 4, 1: B, 2: need, 12: d["r12"]})
+        txt = bytes(m.uc.mem_read(B, need))
+        check(not v and o[2] == need and txt[-1] == 0, "reason 4 fills it, ended by 0")
+        lines = txt[:-1].decode().split("\n")
+        check(lines[-1] == "" and all("\t" in l for l in lines[:-1]) and len(lines) - 1 <= 8
+              and lines[0] == "GPU\tV3D 4.2, revision 14 (the Pi 4's VideoCore VI)"
+              and lines[1].startswith("Clock\t") and lines[2].startswith("GPU memory\t")
+              and "Largest image\t4096 x 4096" in txt.decode(),
+              "reason 4's lines: %s" % lines)
+        print("  reason 4:\n    " + "\n    ".join(lines[:-1]))
+        m.uc.mem_write(B, b"\xAA" * 64)
+        o, v, _ = m.call(d["entry"], {0: 4, 1: B, 2: 20, 12: d["r12"]})
+        cut = bytes(m.uc.mem_read(B, 21))
+        check(not v and o[2] == need and cut[19] == 0 and cut[20] == 0xAA and cut[:19] == txt[:19],
+              "reason 4 into 20 bytes: 19 and a 0, nothing past it")
         o, v, _ = m.call(d["entry"], {0: 2, 1: rf, 12: d["r12"]})
         check(v, "RISC3D sync refused (no command stream)")
         o, v, _ = m.call(d["entry"], {0: 1, 1: rf, 12: d["r12"]})
@@ -1010,9 +1032,29 @@ def test_2d(data):
     check(err is None and m.gfxv is None and not m.areas, "finalised: GraphicsV released, areas gone")
 
 
+def test_domain_first(data):
+    """(0.20) the firmware's V3D power domain is turned on before any V3D
+    register is read: a CM4 aborted at start-up, most likely from the
+    IDENT0 read on a V3D whose domain was off (reset released, gates open)"""
+    m = Pi4()
+    m.strict_domain = True
+    m.domain = 0
+    m.grafx = 0x40                                   # PM_V3DRSTN: reset released
+    m.asb = {0x11008: 0, 0x1100C: 0}                 # gates open
+    mod = Module(m, data, 0x20010000)
+    err = initialise(mod, "NoWFI")
+    check(getattr(m, "read_while_off", 0) == 0, "no V3D register read while its domain was off (%d)"
+          % getattr(m, "read_while_off", 0))
+    check(getattr(m, "domain_sets", [None])[0] == 1, "the domain turned on first (%s)" % getattr(m, "domain_sets", None))
+    check(err is None, "loads (%s)" % err)
+    if err is None:
+        mod.finalise()
+
+
 try:
     main()
     test_2d(open(sys.argv[1], "rb").read())
+    test_domain_first(open(sys.argv[1], "rb").read())
 except (EmuError, UcError) as e:
     failures += 1
     print("FAIL:", e)

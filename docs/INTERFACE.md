@@ -179,3 +179,12 @@ wait behind up to four of them (each a few hundred microseconds at most),
 and their GPU time is in everyone's figures (`DRM_IOCTL_RISCOS_FILE_STATS`),
 not the program's. The desktop's work never waits for a program's: while
 a program has jobs queued or running, it is left to the CPU.
+
+## RISC3D reason 4: hardware (0.20)
+
+V3DRender registers with RISC3D with flags 9: bit 0 marks a DRM device,
+and bit 3 means it answers reason 4. For reason 4, r1 points to a buffer
+and r2 is its size. On exit r2 is the size needed, including the
+terminating 0; the text is cut to fit. Each line is `label TAB value` and
+ends with LF. The lines are GPU, Clock, GPU memory, Largest image and
+Desktop 2D. Programs read it through `RISC3D_Describe` (RISC3D 0.09).

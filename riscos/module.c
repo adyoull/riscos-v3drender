@@ -31,7 +31,7 @@
 #include "plat_pi4.h"
 #include "twod.h"
 
-#define VERSION 19		/* 0.19 */
+#define VERSION 20		/* 0.20 */
 #define SWI_BASE 0x5AFC0
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -88,6 +88,112 @@ irq_c (void)
   call_hal (IRQ_DEVICE, hal_irqclear, hal_sb);
 }
 
+/* (0.12) BO pages (not imported ones) above and below 1 GB, and in
+   1 MB and 64 KB GPU MMU entries */
+static void
+count_pages (uint32_t *high, uint32_t *low, uint32_t *big, uint32_t *super)
+{
+  *high = *low = *big = *super = 0;
+  for (int bo = 1; bo < V3D_MAX_BOS; bo++)
+    {
+      struct v3d_bo *b = &dev->bos[bo];
+      if (!b->used || b->imported)
+	continue;
+      for (uint32_t i = 0; i < b->npages; i++)
+	{
+	  uint32_t pte = dev->pt[b->first + i];
+	  if (!(pte & (1u << 28)))
+	    continue;
+	  if ((pte & 0x0FFFFFFFu) >= 0x40000u)	/* page frame of 1 GB */
+	    (*high)++;
+	  else
+	    (*low)++;
+	  *super += (pte >> 31) & 1;		/* (0.13) in 1 MB entries */
+	  *big += (pte >> 30) & 1;		/* and 64 KB ones */
+	}
+    }
+}
+
+/* (0.20) RISC3D's reason 4, "hardware": lines of label TAB value LF,
+   for Configure's RISC3D window (RISC3D 0.09, DRIVER-GUIDE §5) */
+struct text
+{
+  char *p, *end;
+  uint32_t need;
+};
+
+static void
+tput (struct text *t, const char *s)
+{
+  for (; *s; s++)
+    {
+      if (t->p < t->end)
+	*t->p++ = *s;
+      t->need++;
+    }
+}
+
+static void
+tdec (struct text *t, uint32_t v)
+{
+  char n[12];
+  int i = 11;
+  n[i] = 0;
+  do
+    {
+      n[--i] = (char) ('0' + v % 10);
+      v /= 10;
+    }
+  while (v && i);
+  tput (t, n + i);
+}
+
+static void
+hardware_text (char *buf, uint32_t size, uint32_t *need)
+{
+  struct text t = { buf, buf + (size ? size - 1 : 0), 0 };
+  tput (&t, "GPU\tV3D ");
+  tdec (&t, (unsigned) dev->ver / 10);
+  tput (&t, ".");
+  tdec (&t, (unsigned) dev->ver % 10);
+  tput (&t, ", revision ");
+  tdec (&t, (unsigned) dev->rev);
+  tput (&t, " (the Pi 4's VideoCore VI)\n");
+  uint32_t hz = 0, max = 0;
+  if (!pi4_clock (&hz, &max))
+    {
+      tput (&t, "Clock\t");
+      tdec (&t, hz / 1000000);
+      tput (&t, " MHz now (up to ");
+      tdec (&t, max / 1000000);
+      tput (&t, " MHz, raised while programs draw)\n");
+    }
+  uint32_t high, low, big, super;
+  count_pages (&high, &low, &big, &super);
+  tput (&t, "GPU memory\t");
+  tdec (&t, dev->pages_used * 4);
+  tput (&t, " KB in use");
+  if (!low)
+    tput (&t, ", all above 1 GB");
+  else
+    {
+      tput (&t, " (");
+      tdec (&t, low * 4);
+      tput (&t, " KB below 1 GB)");
+    }
+  tput (&t, ", of ");
+  tdec (&t, dev->area_pages / 256);
+  tput (&t, " MB\n");
+  tput (&t, "Largest image\t4096 x 4096 (textures and render targets)\n");
+  tput (&t, "Desktop 2D\t");
+  tput (&t, twod.mode == TWOD_OFF ? "off (*V3DRender 2D on)" : twod.mode == TWOD_ASYNC
+	? "on, not waited for" : "on: window moves, scrolls and fills on the GPU");
+  tput (&t, "\n");
+  if (size)
+    *t.p = 0;
+  *need = t.need + 1;
+}
+
 /* ---- RISC3D ---- */
 
 /* (0.16) RISC3D_Register is found by name: RISC3D's chunk moved from
@@ -104,8 +210,9 @@ register_risc3d (void)
   if (swix_regs (OS_SWINumberFromString, &n))
     return;				/* RISC3D isn't loaded */
   risc3d_register = n.r[0];
+  /* flags: bit 0 a DRM device; (0.20) bit 3 answers reason 4, hardware */
   regs r = {{ 0, (unsigned) driver_entry, 0, (unsigned) "V3DRender (the Pi 4's GPU)",
-	      1, SWI_BASE + 3, (unsigned) "v3d" }};
+	      1 | 8, SWI_BASE + 3, (unsigned) "v3d" }};
   registered = !swix_regs (risc3d_register, &r);
 }
 
@@ -192,7 +299,9 @@ recover (int all, int report)
 
 /* RISC3D's calls: r0 = 0 open -> r0 = our file; 1 close r1 = file;
    2 sync: not for this kind of driver; 3 describe (RISC3D 0.03, asked
-   only of drivers registered with flags bit 1): r0 = 0, on a GPU */
+   only of drivers registered with flags bit 1): r0 = 0, on a GPU;
+   4 hardware (0.20; RISC3D 0.09, flags bit 3): r1 -> buffer, r2 = size
+   -> r2 = size needed, the text ended with a 0 */
 oserror *
 driver_call (regs *r)
 {
@@ -215,6 +324,14 @@ driver_call (regs *r)
     case 3:				/* describe (RISC3D 0.03): on a GPU */
       r->r[0] = 0;
       return 0;
+    case 4:				/* (0.20) hardware (RISC3D 0.09) */
+      {
+	uint32_t need;
+	v3d_service (dev);
+	hardware_text ((char *) r->r[1], r->r[2], &need);
+	r->r[2] = need;
+	return 0;
+      }
     }
   return ERR (err_sync);
 }
@@ -759,25 +876,8 @@ mod_command (int index, const char *tail, int argc)
   line ("Buffer memory (KB):    ", dev->area_pages * 4);
   line ("  in use (KB):         ", dev->pages_used * 4);
   /* (0.12) how much of it is above 1 GB, out of the VideoCore's reach */
-  uint32_t high = 0, low = 0, big = 0, super = 0;
-  for (int bo = 1; bo < V3D_MAX_BOS; bo++)
-    {
-      struct v3d_bo *b = &dev->bos[bo];
-      if (!b->used || b->imported)
-	continue;
-      for (uint32_t i = 0; i < b->npages; i++)
-	{
-	  uint32_t pte = dev->pt[b->first + i];
-	  if (!(pte & (1u << 28)))
-	    continue;
-	  if ((pte & 0x0FFFFFFFu) >= 0x40000u)	/* page frame of 1 GB */
-	    high++;
-	  else
-	    low++;
-	  super += (pte >> 31) & 1;		/* (0.13) in 1 MB entries */
-	  big += (pte >> 30) & 1;		/* and 64 KB ones */
-	}
-    }
+  uint32_t high, low, big, super;
+  count_pages (&high, &low, &big, &super);
   line ("  above 1 GB (KB):     ", high * 4);
   line ("  below 1 GB (KB):     ", low * 4);
   line ("  in 1 MB entries (KB):", super * 4);

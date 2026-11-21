@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.20: hardware facts for Configure's RISC3D window; V3D power domain first (21 November 2026)
+
+- **RISC3D reason 4, "hardware"** (RISC3D 0.09, DRIVER-GUIDE §5). The owner asked that Configure's RISC3D window report what the GPU supports without a program running.
+  - The GL figures come from riscos-mesa's GPUProbe.
+  - V3DRender registers with flags bit 3 and answers reason 4 with lines of `label TAB value LF`:
+    ```
+    GPU            V3D 4.2, revision 14 (the Pi 4's VideoCore VI)
+    Clock          250 MHz now (up to 500 MHz, raised while programs draw)
+    GPU memory     2048 KB in use, all above 1 GB, of 256 MB
+    Largest image  4096 x 4096 (textures and render targets)
+    Desktop 2D     off (*V3DRender 2D on)
+    ```
+  - r1 points to a buffer and r2 is its size; r2 comes back as the size needed. The text is cut to fit and always ends with a 0. RISC3D 0.08 and older ignore flags bit 3.
+- **The firmware's V3D power domain is turned on before any V3D register is read.**
+  - RISC3D passed on a report (Chris Hughes, Compute Module 4): "Internal abort" at various locations at start-up with !RISC3D, and no V3DDriver installed.
+  - 0.19 and older first read the core's IDENT0 to see whether the V3D was already running. They turned the domain on only after that, and only if it wasn't. If the firmware leaves the reset released and the bus gates open but the domain off, that read can end in an asynchronous external abort, reported later wherever the CPU happens to be.
+  - Now a domain the firmware reports off is turned on first. V3DRender leaves it on, so on a reload it is already on and nothing changes. A firmware without the domain interface answers ~0, and nothing changes there either.
+  - This is a likely cause of the CM4 abort, but it isn't confirmed.
+- **Tests:** emulator 54082 checks:
+  - registration flags 9;
+  - reason 4's size query, its full text, and a 20-byte cut with nothing written past it;
+  - a V3D whose domain is off, with the reset released and the gates open: 0.19 read its registers 34 times before turning the domain on; 0.20 reads none.
+- **Kit 23:** as kit 22, needing 0.20.
+
 ## 0.19: 2D measured on the Pi; limits from the measurements (20 November 2026)
 
 Measured on the owner's Pi 4 through TestAgent: native RISC OS 5, 1920x1200 at 32bpp, ARM at 1800 MHz.
