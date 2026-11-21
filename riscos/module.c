@@ -31,7 +31,7 @@
 #include "plat_pi4.h"
 #include "twod.h"
 
-#define VERSION 20		/* 0.20 */
+#define VERSION 21		/* 0.21 */
 #define SWI_BASE 0x5AFC0
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -715,6 +715,17 @@ mod_command (int index, const char *tail, int argc)
       tail += 2;
       while (*tail == ' ')
 	tail++;
+      if ((tail[0] | 32) == 'a' && (tail[1] | 32) == 'l')	/* 2D alongside on|off (0.21) */
+	{
+	  while (*tail > ' ')
+	    tail++;
+	  while (*tail == ' ')
+	    tail++;
+	  if ((tail[0] | 32) != 'o' || ((tail[1] | 32) != 'n' && (tail[1] | 32) != 'f'))
+	    return ERR (err_syntax);
+	  twod.alongside = (tail[1] | 32) == 'n';
+	  return 0;
+	}
       if ((tail[0] | 32) == 'z')		/* 2D zero: the counters (0.19) */
 	{
 	  twod_zero ();
@@ -938,6 +949,8 @@ mod_command (int index, const char *tail, int argc)
 	  : twod.mode == TWOD_ASYNC ? "on, not waited for" : "on");
   if (twod.mode != TWOD_OFF && !twod.fills)
     write0 (", fills off");
+  if (twod.mode != TWOD_OFF && twod.alongside)
+    write0 (", alongside programs");
   if (twod.mode != TWOD_OFF && twod.screen_ok && twod.screen_why)
     {
       static const char *const why[] = { "", "VDU variables unreadable", "screen not 16 or 32bpp",
@@ -1029,6 +1042,8 @@ mod_command (int index, const char *tail, int argc)
       write0 (" acceleration off, ");
       write_dec (twod.irqs_off);
       write0 (" interrupts off, ");
+      write_dec (twod.prog_open);
+      write0 (" a program using the GPU, ");
       write_dec (twod.errors);
       write0 (" errors");
       newline ();

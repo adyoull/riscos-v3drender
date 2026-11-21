@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.21: no desktop 2D on the GPU while a program has it open (21 November 2026)
+
+- The web browser (Strada, WebKit compositing on the GPU into imported memory) reported that with `*V3DRender 2D on`, its GPU drawing went wrong:
+  - render jobs hung and were reset (8 timeouts, 7 resets);
+  - there were MMU errors at GPU page 0;
+  - frames were lost: missing and stale regions, tiles of noise.
+  - With 2D off, the same build drew right.
+  - The 2D work was 407 fills on the GPU, never declined for 3D work ("0 GPU busy with 3D"). In waited-for mode a 2D job runs alone between the browser's jobs, so the cause isn't simply two jobs on the GPU at once, and it isn't found yet.
+- **Until it is found, the desktop's copies and fills stay on the CPU while any program has a V3DRender file open.** V3DRender's own 2D file doesn't count. `*V3DRender` counts these as "a program using the GPU".
+- `*V3DRender 2D alongside on|off` (default off) allows 2D beside programs again, for finding the cause.
+- **Tests:** emulator 54094: with a program's file open a fill is left to the CPU; alongside on, it's claimed; after the program closes, it's claimed; the counter.
+
 ## 0.20: hardware facts for Configure's RISC3D window; V3D power domain first (21 November 2026)
 
 - **RISC3D reason 4, "hardware"** (RISC3D 0.09, DRIVER-GUIDE §5). The owner asked that Configure's RISC3D window report what the GPU supports without a program running.

@@ -443,7 +443,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 20 and out[8] != 0, "version 0.20, statistics in r8")
+    check(out[0] == 21 and out[8] != 0, "version 0.21, statistics in r8")
     check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
@@ -991,6 +991,24 @@ def test_2d(data):
     mod.command("V3DRender")
     check(re.search(r"us an op \(claimed\): +\d+ in GraphicsV: list \d+, submit \d+, wait \d+", m.output),
           "*V3DRender shows where an op's time goes")
+    # (0.21) not while a program has the GPU open, unless "alongside on"
+    out, e = mod.swi(1, {0: 0})                       # V3DRender_Open: a program's file
+    pf = out[0] if e is None else 0
+    how, _ = fill(100, 999, 499, 700, solid)
+    check(e is None and how == "passed", "a program has the GPU open: the fill is left to the CPU")
+    err = mod.command("V3DRender", "2D alongside on", 3)
+    how, _ = fill(100, 999, 499, 700, solid)
+    check(err is None and how == "claimed", "*V3DRender 2D alongside on: claimed beside the program")
+    m.finish(R["INT_FRDONE"])
+    err = mod.command("V3DRender", "2D alongside off", 3)
+    if pf:
+        mod.swi(2, {0: pf})                           # V3DRender_Close
+    how, _ = fill(100, 999, 499, 700, solid)
+    check(how == "claimed", "the program closed: claimed again")
+    m.finish(R["INT_FRDONE"])
+    m.output = ""
+    mod.command("V3DRender")
+    check("1 a program using the GPU" in m.output, "*V3DRender counts it")
     err = mod.command("V3DRender", "2D fills off", 3)
     how, _ = fill(100, 999, 499, 700, solid)
     check(err is None and how == "passed", "*V3DRender 2D fills off: fills passed on")
@@ -999,7 +1017,7 @@ def test_2d(data):
     err = mod.command("V3DRender")
     check(err is None and "Desktop copies (2D):   on, not waited for" in m.output
           and "copies by the GPU:   9 of 15 (1 scrolls; 3 small)" in m.output
-          and "fills by the GPU:    1 of 5 (2 small, 2 patterned)" in m.output
+          and "fills by the GPU:    3 of 8 (2 small, 2 patterned)" in m.output
           and "1 acceleration off" in m.output, "*V3DRender shows them:\n%s" % m.output)
     print("  " + "\n  ".join(l for l in m.output.splitlines() if "2D" in l or "by the GPU" in l
                                 or "left to" in l.lower() or "GPU work" in l))

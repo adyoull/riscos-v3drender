@@ -171,6 +171,19 @@ usable (void)
       twod.irqs_off++;
       return 0;
     }
+  /* (0.21) Not while a program has the GPU open, unless asked
+     (*V3DRender 2D alongside on). The web browser's 3D drawing went
+     wrong with the desktop's fills on the GPU between its jobs: render
+     jobs hung and were reset, and frames were lost (21 Nov 2026). The
+     cause isn't found yet; until it is, the desktop's work stays on the
+     CPU while any program uses the GPU. */
+  if (!twod.alongside)
+    for (int f = 0; f < V3D_MAX_FILES; f++)
+      if (v3d->files[f].used && f != v3d->twod.file)
+	{
+	  twod.prog_open++;
+	  return 0;
+	}
   /* the user's or a program's "no hardware acceleration", and a cached
      screen (the GPU would miss what the CPU has in its cache) */
   regs m = {{ 4, (unsigned) -1, (unsigned) -1 }};
@@ -498,7 +511,7 @@ twod_zero (void)
   twod.offered = twod.claimed = twod.scrolls = twod.small = 0;
   twod.irqs_off = twod.disabled = twod.no_screen = twod.errors = 0;
   twod.fills_offered = twod.fills_claimed = twod.fills_small = twod.fills_pattern = 0;
-  twod.bank_flips = twod.us_claimed = twod.us_left = 0;
+  twod.bank_flips = twod.us_claimed = twod.us_left = twod.prog_open = 0;
   if (v3d)
     {
       struct v3d_2d *t = &v3d->twod;

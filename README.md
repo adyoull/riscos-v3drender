@@ -190,6 +190,9 @@ default**:
   work. No numbers gives the defaults measured on a Pi 4 in 0.19: 1024,
   8, 4096, 16, 0 (Rob's V3DDriver used 2048, 16, 16384, 32, 4500).
 - `*V3DRender 2D zero` (0.19): the 2D counters and times back to 0.
+- While any program has the GPU open, the desktop's work stays on the
+  CPU (0.21; a web browser's GPU drawing went wrong beside it).
+  `*V3DRender 2D alongside on` allows it anyway, for testing.
 - At load: the `2D` or `2DAsync` option, or `*Set V3DRender$2D on`
   (or `async`) before V3DRender loads.
 

@@ -33,6 +33,8 @@ struct twod_state
   uint32_t bank_flips;
   uint32_t lim[5];			/* (0.18) *V3DRender 2D limits */
   uint32_t us_claimed, us_left;		/* (0.19) in GraphicsV: ops claimed, ops left */
+  int alongside;			/* (0.21) 2D even while a program has the GPU open */
+  uint32_t prog_open;			/* (0.21) left: a program had the GPU open */
   uint32_t fills_offered, fills_claimed, fills_small, fills_pattern;
 };
 extern struct twod_state twod;
