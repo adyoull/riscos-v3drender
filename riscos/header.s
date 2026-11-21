@@ -28,7 +28,7 @@ module_start:
 	.word	flags - module_start
 
 title:	.asciz	"V3DRender"
-help:	.asciz	"V3DRender\t0.22 (21 Nov 2026) Pi 4 GPU driver (V3D 4.2), after Linux's v3d"
+help:	.asciz	"V3DRender\t0.23 (21 Nov 2026) Pi 4 GPU driver (V3D 4.2), after Linux's v3d"
 swi_names:
 	.asciz	"V3DRender\0Info\0Open\0Close\0Ioctl\0Reset\0Debug\0"
 	.align	2
@@ -87,6 +87,10 @@ service:
 	teqne	r1, #0xDA
 	teqne	r1, #0x46
 	teqne	r1, #0x4D
+	teqne	r1, #0x8E			@ (0.23) Service_PagesUnsafe
+	teqne	r1, #0x8F			@ Service_PagesSafe
+	teqne	r1, #0xE3			@ Service_PagesUnsafe64
+	teqne	r1, #0xE4			@ Service_PagesSafe64
 	movne	pc, lr
 	b	cm_service
 

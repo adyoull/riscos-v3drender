@@ -158,6 +158,7 @@ struct v3d_stats
   uint32_t cache_cleans, cache_invals;	/* and how many BOs, each way */
   uint32_t cache_deferred;		/* invalidates put off: more jobs to come */
   uint32_t pad2;
+  uint32_t page_moves, pages_moved;	/* (0.23) the OS moved imported pages */
 };
 
 struct v3d_dev
@@ -200,6 +201,7 @@ struct v3d_dev
   struct v3d_stats stats;
   int dumped;				/* the first hang's dump is taken */
   int reset_asked;			/* v3d_cancel_all's reset (0.10): for the log */
+  int hold;				/* (0.23) pages are moving: start no job */
   uint32_t place_at;			/* (0.13) the next BO's first page, for the kit's replay (0: none) */
   struct v3d_2d
   {
@@ -247,6 +249,14 @@ int v3d_irq (struct v3d_dev *v3d);	/* the interrupt: 1 if it was ours */
 void v3d_reset (struct v3d_dev *v3d);
 void v3d_record_hang (struct v3d_dev *v3d, struct v3d_job *job);
 void v3d_cancel_all (struct v3d_dev *v3d);	/* (0.10) every job ended, the GPU reset */
+/* (0.23) The OS is about to move physical pages (Service_PagesUnsafe):
+   1 if any imported BO uses one of them, in which case no job starts
+   until v3d_pages_safe, and the running ones have been waited for.
+   pa: the pages' physical addresses. */
+int v3d_pages_unsafe (struct v3d_dev *v3d, const uint64_t *pa, uint32_t n);
+/* (Service_PagesSafe) they moved: imported BOs' pages at old[i] are now at
+   new_[i]; their GPU page table entries follow, and jobs start again */
+void v3d_pages_safe (struct v3d_dev *v3d, const uint64_t *old, const uint64_t *new_, uint32_t n);
 void v3d_dump_hang (struct v3d_dev *v3d, struct v3d_job *job);
 
 /* The dump of the first hung job (0.06), what *V3DDump saves: words.

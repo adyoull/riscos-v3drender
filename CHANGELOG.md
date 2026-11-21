@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.23: imported memory follows pages the OS moves (21 November 2026)
+
+- **The likely cause of the web browser's broken GPU drawing** (render jobs hanging, frames lost, MMU errors, and with 2D off too):
+  - RISC OS can move a physical page of any memory that isn't locked. It copies the page and remaps its logical address, for example to give a dynamic area the specific pages it asked for. V3DRender's own `OS_Memory 12` claims for buffers above 1 GB ask for exactly that.
+  - Memory a program imports (`DRM_IOCTL_RISCOS_IMPORT_MEMORY`, the browser's EGL_RISCOS_image_memory) is used by the GPU through the physical pages it had at import. After a move, the GPU kept writing the old pages, which now belonged to someone else.
+  - On the owner's Pi, a hung render list was found overwritten with pixel words (&FFFFFEFF ...): a later V3DRender buffer had been given a page the browser's frames still mapped.
+- **The fix: Service_PagesUnsafe / PagesSafe**, the OS's own notice for anything doing DMA, and their 64-bit forms &E3 / &E4.
+  - On *Unsafe*, if any imported BO uses one of the pages, no new job starts. The jobs running are waited for (the interrupt polled, up to 1 s).
+  - On *Safe*, those BOs' pages take their new physical addresses, their GPU page table entries are rewritten, and jobs start again.
+  - Inside a 64-bit pair, the 32-bit calls are ignored: they list only some of the same pages.
+  - `*V3DRender` shows "Pages moved by the OS" when it has happened.
+- **Tests:** emulator 54105, with an imported page moved by Unsafe64 and Safe64:
+  - a job submitted in between doesn't start until Safe64;
+  - the 32-bit Safe inside the pair changes nothing;
+  - the moved page's PTE points at its new place and the others stay;
+  - the counter.
+- **Kit 26:** as kit 25, needing 0.23.
+
 ## 0.22: `*V3DRender` could abort when showing an MMU error (21 November 2026)
 
 - **The fault:** the MMU error line's client name ("L2T", "TLB", ...) and the 2D line's reason why the screen can't be used came from tables of string pointers. The module isn't relocated, so those pointers were link-time addresses.

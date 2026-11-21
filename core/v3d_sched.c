@@ -89,6 +89,8 @@ void
 v3d_pump (struct v3d_dev *v3d)
 {
   int progress;
+  if (v3d->hold)
+    return;				/* (0.23) pages are moving */
   do
     {
       progress = 0;

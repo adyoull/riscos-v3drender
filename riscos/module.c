@@ -31,7 +31,7 @@
 #include "plat_pi4.h"
 #include "twod.h"
 
-#define VERSION 22		/* 0.22 */
+#define VERSION 23		/* 0.23 */
 #define SWI_BASE 0x5AFC0
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
@@ -356,6 +356,53 @@ driver_call (regs *r)
 
 /* ---- the module ---- */
 
+/* (0.23) Pages the OS is moving (Service_PagesUnsafe(64) / PagesSafe(64)):
+   page blocks of 3 words (page number, logical, physical) or 5 (page
+   number, logical low/high, physical low/high). A 64-bit pair surrounds
+   the 32-bit one, which then lists only some of the same pages. */
+static int in64;
+
+static uint64_t
+block_pa (const uint32_t *e, int words)
+{
+  return words == 5 ? (uint64_t) e[3] | (uint64_t) e[4] << 32 : (uint64_t) e[2];
+}
+
+static void
+pages_unsafe (const uint32_t *blk, uint32_t n, int words)
+{
+  if (!n || !blk)
+    return;
+  uint64_t *pa = plat_alloc (n * sizeof *pa);
+  if (!pa)
+    {
+      dev->hold = 1;			/* can't tell: hold everything until safe */
+      return;
+    }
+  for (uint32_t i = 0; i < n; i++)
+    pa[i] = block_pa (blk + i * words, words);
+  v3d_pages_unsafe (dev, pa, n);
+  plat_free (pa);
+}
+
+static void
+pages_safe (const uint32_t *before, const uint32_t *after, uint32_t n, int words)
+{
+  uint64_t *pa = n ? plat_alloc (2 * n * sizeof *pa) : 0;
+  if (!pa)
+    {
+      v3d_pages_safe (dev, 0, 0, 0);	/* at least start jobs again */
+      return;
+    }
+  for (uint32_t i = 0; i < n; i++)
+    {
+      pa[i] = block_pa (before + i * words, words);
+      pa[n + i] = block_pa (after + i * words, words);
+    }
+  v3d_pages_safe (dev, pa, pa + n, n);
+  plat_free (pa);
+}
+
 oserror *
 mod_swi (unsigned number, regs *r)
 {
@@ -437,6 +484,22 @@ mod_service (regs *r)
       break;
     case 0x45:				/* Service_PreReset */
       v3d_irq_disable (dev);
+      break;
+    case 0xE3:				/* (0.23) Service_PagesUnsafe64 */
+      pages_unsafe ((const uint32_t *) r->r[2], r->r[3], 5);
+      in64 = 1;
+      break;
+    case 0x8E:				/* Service_PagesUnsafe: inside a 64 one, a subset */
+      if (!in64)
+	pages_unsafe ((const uint32_t *) r->r[2], r->r[3], 3);
+      break;
+    case 0x8F:				/* Service_PagesSafe */
+      if (!in64)
+	pages_safe ((const uint32_t *) r->r[3], (const uint32_t *) r->r[4], r->r[2], 3);
+      break;
+    case 0xE4:				/* Service_PagesSafe64 */
+      pages_safe ((const uint32_t *) r->r[3], (const uint32_t *) r->r[4], r->r[2], 5);
+      in64 = 0;
       break;
     case 0x4D:				/* Service_PreModeChange (0.17) */
       twod_mode_changing ();
@@ -1061,6 +1124,15 @@ mod_command (int index, const char *tail, int argc)
       write0 (" a program using the GPU, ");
       write_dec (twod.errors);
       write0 (" errors");
+      newline ();
+    }
+  if (s->page_moves)
+    {
+      write0 ("Pages moved by the OS: ");
+      write_dec (s->pages_moved);
+      write0 (" imported pages, ");
+      write_dec (s->page_moves);
+      write0 (" times (the GPU waited)");
       newline ();
     }
   line ("MMU errors:            ", s->mmu_errors);

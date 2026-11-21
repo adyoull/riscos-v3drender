@@ -386,3 +386,93 @@ v3d_bo_fini (struct v3d_dev *v3d)
   plat_free (v3d->page_map);
   v3d->page_map = 0;
 }
+
+/* ---- (0.23) pages the OS moves ----
+   RISC OS may move a physical page out from under any memory that isn't
+   locked, copying it and remapping its logical address: to give a
+   dynamic area the specific pages it asked for, as V3DRender's own
+   OS_Memory 12 claims do. A program's memory imported as a BO is used by
+   the GPU through its physical pages, so a moved page would leave the
+   GPU writing the old one, which now belongs to someone else: the web
+   browser's frames overwrote render control lists that way (21 Nov
+   2026). The OS says before (Service_PagesUnsafe) and after
+   (Service_PagesSafe), as it does for any DMA. */
+
+static int
+bo_uses (const struct v3d_bo *b, const uint64_t *pa, uint32_t n)
+{
+  for (uint32_t i = 0; i < b->npages; i++)
+    for (uint32_t j = 0; j < n; j++)
+      if (b->pa[i] == pa[j])
+	return 1;
+  return 0;
+}
+
+int
+v3d_pages_unsafe (struct v3d_dev *v3d, const uint64_t *pa, uint32_t n)
+{
+  int hit = 0;
+  for (int bo = 1; bo < V3D_MAX_BOS && !hit; bo++)
+    if (v3d->bos[bo].used && v3d->bos[bo].imported && v3d->bos[bo].pa)
+      hit = bo_uses (&v3d->bos[bo], pa, n);
+  if (!hit)
+    return 0;
+  v3d->hold = 1;
+  v3d->stats.page_moves++;
+  /* the jobs running now finish; the interrupt is polled, since this may
+     come with interrupts off */
+  uint32_t t0 = plat_time_cs ();
+  for (;;)
+    {
+      unsigned s = plat_irq_off ();
+      int busy = 0;
+      for (int q = 0; q < V3D_HW_QUEUES; q++)
+	busy |= v3d->active[q] != 0;
+      if (busy)
+	{
+	  v3d_irq (v3d);		/* (not counted: only work done counts) */
+	  busy = 0;
+	  for (int q = 0; q < V3D_HW_QUEUES; q++)
+	    busy |= v3d->active[q] != 0;
+	}
+      plat_irq_restore (s);
+      if (!busy)
+	break;
+      if (plat_time_cs () - t0 > 100)
+	{
+	  plat_log (v3d, "Pages moving while the GPU is still busy", 0);
+	  break;
+	}
+    }
+  return 1;
+}
+
+void
+v3d_pages_safe (struct v3d_dev *v3d, const uint64_t *old, const uint64_t *new_, uint32_t n)
+{
+  for (int bo = 1; bo < V3D_MAX_BOS; bo++)
+    {
+      struct v3d_bo *b = &v3d->bos[bo];
+      if (!b->used || !b->imported || !b->pa)
+	continue;
+      int changed = 0;
+      for (uint32_t i = 0; i < b->npages; i++)
+	for (uint32_t j = 0; j < n; j++)
+	  if (b->pa[i] == old[j] && old[j] != new_[j])
+	    {
+	      b->pa[i] = new_[j];
+	      changed = 1;
+	      v3d->stats.pages_moved++;
+	      break;
+	    }
+      if (changed)
+	v3d_mmu_insert_ptes (v3d, bo);
+    }
+  if (v3d->hold)
+    {
+      v3d->hold = 0;
+      unsigned s = plat_irq_off ();
+      v3d_pump (v3d);
+      plat_irq_restore (s);
+    }
+}

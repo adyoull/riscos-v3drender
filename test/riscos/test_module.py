@@ -443,7 +443,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 22 and out[8] != 0, "version 0.22, statistics in r8")
+    check(out[0] == 23 and out[8] != 0, "version 0.23, statistics in r8")
     check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
@@ -568,11 +568,40 @@ def main():
     ret, b = ioctl(R["IOCTL_MMAP_BO"], struct.pack("<IIQ", ih, 0, 0))
     check(ret == 0 and struct.unpack("<IIQ", b)[2] == UMEM + 0x1000, "MMAP_BO gives its own address")
     check((ioff >> 12) not in bo_area["mapped"], "and no buffer-area page was taken for it")
+    # (0.23) the OS moves one of the imported pages: no job starts between
+    # Service_PagesUnsafe64 and Service_PagesSafe64, then the GPU's MMU
+    # points at the page's new place. The 32-bit pair inside is ignored.
+    PB = SCRATCH + 0xC000
+    old, new = 0x500002000, 0x600005000
+    m.uc.mem_write(PB, struct.pack("<5I", 0x500002, UMEM + 0x2000, 0, old & 0xFFFFFFFF, old >> 32))
+    m.uc.mem_write(PB + 20, struct.pack("<5I", 0x600005, UMEM + 0x2000, 0, new & 0xFFFFFFFF, new >> 32))
+    m.call(mod.base + mod.service, {1: 0xE3, 2: PB, 3: 1, 12: m.pw})
+    m.uc.mem_write(PB + 40, struct.pack("<3I", 0x1234, 0x9000, 0x1234000))
+    m.call(mod.base + mod.service, {1: 0x8E, 2: PB + 40, 3: 1, 12: m.pw})
+    n0 = len(m.started)
     m.uc.mem_write(hlist, struct.pack("<II", ch, ih))
     cl = struct.pack("<9I4xQ4IQ", 0x1000, 0x1040, 0x2000, 0x2040, 0, 0, sync,
                      0x3000, 0x8000, hlist, 2, 0, 0, 0, 0)
     ret, _ = ioctl(R["IOCTL_SUBMIT_CL"], cl)
-    check(ret == 0, "SUBMIT_CL with both (the caches cleaned by address)")
+    check(ret == 0 and len(m.started) == n0, "pages moving: the job waits (%d started)" % (len(m.started) - n0))
+    m.call(mod.base + mod.service, {1: 0x8F, 2: 1, 3: PB + 40, 4: PB + 40, 12: m.pw})
+    check(len(m.started) == n0, "the 32-bit PagesSafe inside the 64-bit pair changes nothing")
+    m.call(mod.base + mod.service, {1: 0xE4, 2: 1, 3: PB, 4: PB + 20, 12: m.pw})
+    pte = m.word(pt["base"] + ((ioff >> 12) + 1) * 4)
+    check((pte & 0xFFFFFF) == (new >> 12) & 0xFFFFFF and pte & (1 << 28),
+          "the moved page's PTE follows it (&%08X)" % pte)
+    pte0 = m.word(pt["base"] + (ioff >> 12) * 4)
+    check((pte0 & 0xFFFFFF) == (0x500001000 >> 12) & 0xFFFFFF, "the others stay")
+    check(len(m.started) > n0, "PagesSafe64: the job starts")
+    m.output = ""
+    mod.command("V3DRender")
+    check("Pages moved by the OS: 1 imported pages, 1 times" in m.output, "*V3DRender counts the move")
+    # pages nobody imported: no hold at all
+    m.uc.mem_write(PB + 60, struct.pack("<5I", 0x7000, 0x9000, 0, 0x7000000, 0))
+    m.call(mod.base + mod.service, {1: 0xE3, 2: PB + 60, 3: 1, 12: m.pw})
+    m.call(mod.base + mod.service, {1: 0xE4, 2: 1, 3: PB + 60, 4: PB + 60, 12: m.pw})
+    check("Pages moved by the OS: 1 imported pages, 1 times" in (m.output if False else m.output),
+          "pages not imported: nothing held")
     m.finish(R["INT_FLDONE"])
     m.finish(R["INT_FRDONE"])
     check(wait(0) == 0, "done (and invalidated before the wait returned)")
