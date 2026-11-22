@@ -28,7 +28,7 @@ module_start:
 	.word	flags - module_start
 
 title:	.asciz	"V3DRender"
-help:	.asciz	"V3DRender\t0.25 (22 Nov 2026) Pi 4 GPU driver (V3D 4.2), after Linux's v3d"
+help:	.asciz	"V3DRender\t0.26 (22 Nov 2026) Pi 4 GPU driver (V3D 4.2), after Linux's v3d"
 swi_names:
 	.asciz	"V3DRender\0Info\0Open\0Close\0Ioctl\0Reset\0Debug\0"
 	.align	2
@@ -122,6 +122,21 @@ gfxv_entry:
 	ldmfd	sp!, {r0-r10, lr}
 	moveq	pc, lr				@ not ours: on to the next claimant
 	ldmfd	sp!, {pc}			@ claimed
+
+@ (0.26) A transient callback (OS_AddCallBack): SVC mode, every register
+@ preserved, back by MOV PC, R14. Interrupts on while callback_c runs
+@ (it may claim and free RISC OS memory); the PSR as it was after.
+	.global	callback_entry
+callback_entry:
+	stmfd	sp!, {r0-r12, lr}
+	mrs	r4, cpsr
+	mov	r5, sp
+	bic	sp, sp, #7			@ C wants an 8-byte aligned stack
+	cpsie	i
+	bl	callback_c
+	msr	cpsr_cxsf, r4
+	mov	sp, r5
+	ldmfd	sp!, {r0-r12, pc}
 
 @ void call_hal (unsigned arg, void *routine, unsigned sb): a HAL routine
 @ found with OS_Hardware 1, called directly (no SWI from the interrupt)

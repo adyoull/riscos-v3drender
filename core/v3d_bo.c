@@ -151,6 +151,8 @@ find_pages_aligned (struct v3d_dev *v3d, uint32_t n, uint32_t *first, int avoid)
 static int
 find_place (struct v3d_dev *v3d, uint32_t n, uint32_t *first, int aligned)
 {
+  if (v3d->no_page_ops)			/* (0.26) kept pages can't go back now */
+    return aligned ? find_pages_aligned (v3d, n, first, 1) : find_pages (v3d, n, first, 1);
   if (aligned)
     return find_pages_aligned (v3d, n, first, 1) || find_pages_aligned (v3d, n, first, 0);
   return find_pages (v3d, n, first, 1) || find_pages (v3d, n, first, 0);
@@ -246,8 +248,13 @@ unpool (struct v3d_dev *v3d, uint32_t first, uint32_t n)
 void
 v3d_pool_trim (struct v3d_dev *v3d, uint32_t keep)
 {
-  if (!v3d->page_backed)
+  if (!v3d->page_backed || v3d->pool_pages <= keep)
     return;
+  if (v3d->no_page_ops)
+    {
+      v3d->page_work_due = 1;		/* (0.26) later, from v3d_service */
+      return;
+    }
   for (uint32_t p = 1; p < v3d->area_pages && v3d->pool_pages > keep;)
     {
       uint32_t w = v3d->page_backed[p >> 5] & ~v3d->page_map[p >> 5];
@@ -299,6 +306,8 @@ back_pages (struct v3d_dev *v3d, uint32_t first, uint32_t n, int cached)
 	  p++;
 	  continue;
 	}
+      if (v3d->no_page_ops)
+	return -1;			/* (0.26) no claims now */
       uint32_t k = 1;
       while (p + k < end && bit (v3d->page_backed, p + k) == b
 	     && (!b || bit (v3d->page_backed_cached, p + k) != (cached != 0)))
@@ -371,6 +380,8 @@ v3d_bo_create_cached (struct v3d_dev *v3d, uint32_t bytes, int cached, int *bo_o
   uint32_t claimed = v3d->stats.pages_claimed;
   if (back_pages (v3d, first, n, cached))
     {
+      if (v3d->no_page_ops)
+	return -V3D_ENOMEM;
       /* short of memory: the pool goes back to RISC OS, and once more */
       v3d_pool_trim (v3d, 0);
       if (back_pages (v3d, first, n, cached))
@@ -599,7 +610,12 @@ v3d_bo_put (struct v3d_dev *v3d, int bo)
       v3d->pages_used -= b->npages;
       v3d->pool_pages += b->npages;	/* (0.25) kept, if there's room */
       if (v3d->pool_pages > v3d->pool_max || !v3d_programs_open (v3d))
-	unpool (v3d, b->first, b->npages);
+	{
+	  if (v3d->no_page_ops)
+	    v3d->page_work_due = 1;	/* (0.26) back to RISC OS later */
+	  else
+	    unpool (v3d, b->first, b->npages);
+	}
     }
   b->used = 0;
 }

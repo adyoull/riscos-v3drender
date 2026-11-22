@@ -251,6 +251,13 @@ class Pi4(Machine):
                         out(1, pa >> 32)
                         return
                 return self._fail(number, 0xFC, "bad address")
+        if base == 0x54:                          # (0.26) OS_AddCallBack
+            self.callbacks = getattr(self, "callbacks", []) + [(r[0], r[1])]
+            self.callbacks_added = getattr(self, "callbacks_added", 0) + 1
+            return
+        if base == 0x5F:                          # (0.26) OS_RemoveCallBack
+            self.callbacks = [c for c in getattr(self, "callbacks", []) if c != (r[0], r[1])]
+            return
         if base == 0x24:                          # (0.24) OS_SetVarVal
             if not hasattr(self, "vars"):
                 self.vars = {}
@@ -378,6 +385,7 @@ class Pi4(Machine):
             check(not a["mapped"] and not a["claimed"], "an area is empty when removed (%s)" % a["name"])
             return
         a = self.areas[r[1]]
+        self.pmp_calls = getattr(self, "pmp_calls", 0) + 1   # (0.26) each tells the Wimp memory moved
         for i in range(r[3]):
             e = r[2] + 12 * i
             idx, page, flags = self.word(e), self.word(e + 4), self.word(e + 8)
@@ -385,6 +393,7 @@ class Pi4(Machine):
                 if page == 0xFFFFFFFF:
                     check(idx not in a["mapped"].values(), "a mapped page isn't released")
                     a["claimed"].pop(idx, None)
+                    a["releases"] = a.get("releases", 0) + 1     # (0.26)
                 else:
                     check(flags & (1 << 15), "pages are locked")
                     if page == 0xFFFFFFFE:      # the kernel picks: low memory
@@ -453,7 +462,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 25 and out[8] != 0, "version 0.25, statistics in r8")
+    check(out[0] == 26 and out[8] != 0, "version 0.26, statistics in r8")
     check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
@@ -900,6 +909,31 @@ def gfxv(m, r):
     raise EmuError("GraphicsV returned to &%08X, sp &%08X" % (pc, nsp))
 
 
+def run_callbacks(m):
+    """(0.26) the kernel calls transient callbacks as it leaves SVC mode:
+    SVC mode, IRQs off, every register to be preserved, back by lr"""
+    from emu import STACK_BASE, STACK_SIZE
+    uc = m.uc
+    cbs, m.callbacks = getattr(m, "callbacks", []), []
+    for entry, r12 in cbs:
+        sp = STACK_BASE + STACK_SIZE - 0x100
+        for i, reg in enumerate(REGS[:12]):
+            uc.reg_write(reg, 0x77770000 + i)
+        uc.reg_write(REGS[12], r12)
+        uc.reg_write(UC_ARM_REG_SP, sp)
+        uc.reg_write(UC_ARM_REG_LR, RETURN)
+        uc.reg_write(UC_ARM_REG_CPSR, 0x93)
+        m.fault = None
+        uc.emu_start(entry, RETURN, count=5_000_000)
+        if m.fault:
+            raise EmuError(m.fault)
+        ok = all(uc.reg_read(reg) == 0x77770000 + i for i, reg in enumerate(REGS[:12]))
+        check(ok and uc.reg_read(REGS[12]) == r12 and uc.reg_read(UC_ARM_REG_SP) == sp
+              and uc.reg_read(UC_ARM_REG_CPSR) & 0x1F == 0x13 and uc.reg_read(UC_ARM_REG_CPSR) & 0x80,
+              "(0.26) the callback preserved every register and the mode")
+    return len(cbs)
+
+
 def test_2d(data):
     """(0.17) the GPU's desktop copies: GraphicsV claimed, copies taken or
     left to the CPU, the framestore mapped, the commands and services"""
@@ -1070,6 +1104,45 @@ def test_2d(data):
     how, _ = fill(100, 999, 499, 700, solid)
     check(how == "claimed", "the program closed: claimed again")
     m.finish(R["INT_FRDONE"])
+
+    # (0.26) no RISC OS memory claimed or given back inside GraphicsV: a
+    # program's last job, released by the desktop's next fill, leaves its
+    # buffer's pages for a callback to give back
+    A2 = SCRATCH + 0xA000
+    out, e = mod.swi(1, {0: 0})
+    pf2 = out[0]
+    def pio(req, payload):
+        m.uc.mem_write(A2, payload)
+        o, e2 = mod.swi(3, {0: pf2, 1: req, 2: A2})
+        res = o[0] - (1 << 32) if o[0] & 0x80000000 else o[0]
+        return res, bytes(m.uc.mem_read(A2, len(payload)))
+    ret, b = pio(R["IOCTL_CREATE_BO"], struct.pack("<IIII", 3 * 4096, 0, 0, 0))
+    _, _, h2, off2 = struct.unpack("<IIII", b)
+    m.uc.mem_write(A2 + 0x100, struct.pack("<I", h2))
+    cl2 = struct.pack("<9I4xQ4IQ", 0x1000, 0x1040, 0x2000, 0x2040, 0, 0, 0,
+                      0x3000, 0x8000, A2 + 0x100, 1, 0, 0, 0, 0)
+    ret2, _ = pio(R["IOCTL_SUBMIT_CL"], cl2)
+    ret3, _ = pio(R["IOCTL_GEM_CLOSE"], struct.pack("<II", h2, 0))
+    mod.swi(2, {0: pf2})                              # the program closes; its job runs on
+    m.finish(R["INT_FLDONE"])
+    m.finish(R["INT_FRDONE"])                         # ...and finishes
+    check(ret == 0 and ret2 == 0 and ret3 == 0 and (off2 >> 12) in bo_area["mapped"],
+          "(0.26) a closed program's buffer, held by its finished job")
+    rel0, cb0 = bo_area.get("releases", 0), getattr(m, "callbacks_added", 0)
+    pmp0 = getattr(m, "pmp_calls", 0)
+    how, _ = fill(100, 999, 499, 700, solid)
+    check(how == "claimed" and (off2 >> 12) in bo_area["mapped"]
+          and bo_area.get("releases", 0) == rel0 and getattr(m, "pmp_calls", 0) == pmp0,
+          "(0.26) the fill releases the job, but its pages aren't given back in GraphicsV")
+    check(getattr(m, "callbacks_added", 0) == cb0 + 1 and len(m.callbacks) == 1,
+          "(0.26) a callback is asked for, once")
+    m.finish(R["INT_FRDONE"])
+    how, _ = fill(100, 999, 499, 700, solid)
+    m.finish(R["INT_FRDONE"])
+    check(getattr(m, "callbacks_added", 0) == cb0 + 1, "(0.26) and not again while it's pending")
+    check(run_callbacks(m) == 1 and (off2 >> 12) not in bo_area["mapped"]
+          and bo_area.get("releases", 0) > rel0,
+          "(0.26) the callback gives the pages back")
     m.output = ""
     mod.command("V3DRender")
     check("1 a program using the GPU" in m.output, "*V3DRender counts it")
@@ -1081,7 +1154,7 @@ def test_2d(data):
     err = mod.command("V3DRender")
     check(err is None and "Desktop copies (2D):   on, not waited for" in m.output
           and "copies by the GPU:   9 of 15 (1 scrolls; 3 small)" in m.output
-          and "fills by the GPU:    3 of 8 (2 small, 2 patterned)" in m.output
+          and "fills by the GPU:    5 of 10 (2 small, 2 patterned)" in m.output
           and "1 acceleration off" in m.output, "*V3DRender shows them:\n%s" % m.output)
     print("  " + "\n  ".join(l for l in m.output.splitlines() if "2D" in l or "by the GPU" in l
                                 or "left to" in l.lower() or "GPU work" in l))

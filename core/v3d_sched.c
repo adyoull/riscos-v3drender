@@ -300,8 +300,21 @@ v3d_service (struct v3d_dev *v3d)
       done = next;
     }
 
+  /* (0.26) not where RISC OS memory can't be claimed or given back:
+     then the platform calls in again from somewhere it can */
+  if (v3d->no_page_ops)
+    {
+      if (v3d->noverflow_pool < V3D_OVERFLOW_POOL / 2)
+	v3d->page_work_due = 1;
+    }
+  else if (v3d->page_work_due)
+    {
+      v3d->page_work_due = 0;
+      v3d_pool_trim (v3d, v3d_programs_open (v3d) ? v3d->pool_max : 0);
+    }
+
   /* keep the binner's overflow memory topped up */
-  while (v3d->noverflow_pool < V3D_OVERFLOW_POOL / 2)
+  while (!v3d->no_page_ops && v3d->noverflow_pool < V3D_OVERFLOW_POOL / 2)
     {
       int bo;
       if (v3d_bo_create (v3d, V3D_OVERFLOW_BYTES, &bo))

@@ -31,13 +31,15 @@
 #include "plat_pi4.h"
 #include "twod.h"
 
-#define VERSION 25		/* 0.25 */
+#define VERSION 26		/* 0.26 */
 #define SWI_BASE 0x5AFC0
 #ifndef OS_SetVarVal
 #define OS_SetVarVal		0x24
 #endif
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
+#define OS_AddCallBack		0x54
+#define OS_RemoveCallBack	0x5F
 #define Wimp_ReadSysInfo	0x400F2
 #define OS_SWINumberFromString	0x39
 #define IRQ_DEVICE 10				/* iDev_GPU_VC3D */
@@ -51,8 +53,33 @@ void call_hal (unsigned arg, void *routine, unsigned sb);
 const char *v3d_axi_client (uint32_t id);
 
 static struct v3d_dev *dev;
+static int inited;			/* (0.24) v3d_init succeeded */
 static int twod_wanted;			/* (0.17) 2D at load: TWOD_* */
 static void *private_word;
+
+/* (0.26) the driver's memory work that couldn't be done inside a
+   GraphicsV call (v3d->page_work_due), done from a transient callback,
+   when RISC OS next leaves SVC mode */
+extern void callback_entry (void);
+static int callback_pending;
+
+void
+callback_c (void)
+{
+  callback_pending = 0;
+  if (dev && inited && !dev->no_page_ops)
+    v3d_service (dev);
+}
+
+void
+v3d_later (void)
+{
+  if (callback_pending || !dev || !dev->page_work_due)
+    return;
+  regs r = {{ (unsigned) callback_entry, (unsigned) private_word }};
+  if (!swix_regs (OS_AddCallBack, &r))
+    callback_pending = 1;
+}
 static void *hal_irqclear;
 static unsigned hal_sb;
 static int vector_claimed, registered, mapped_up, clock_raised;
@@ -82,7 +109,6 @@ hal (unsigned entry)
   return swix_regs (OS_Hardware, &r);
 }
 
-static int inited;			/* (0.24) v3d_init succeeded */
 
 /* the interrupt (from irq_entry) */
 void
@@ -561,6 +587,12 @@ mod_final (int fatal)
   (void) fatal;
   deregister_risc3d ();
   twod_final ();			/* (0.17) GraphicsV released first */
+  if (callback_pending)
+    {
+      regs r = {{ (unsigned) callback_entry, (unsigned) private_word }};
+      swix_regs (OS_RemoveCallBack, &r);
+      callback_pending = 0;
+    }
   if (dev && inited)
     {
       v3d_fini (dev);			/* (it needs the interrupt to finish jobs) */

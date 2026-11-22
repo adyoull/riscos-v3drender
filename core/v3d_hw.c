@@ -151,6 +151,12 @@ void
 v3d_clean_caches (struct v3d_dev *v3d)
 {
   int core = 0;
+  /* (0.26) GFXH-1897: writing L2TCACTL while an L2T flush is still
+     pending clobbers it (V3D before 7.1). As Linux's "drm/v3d: Wait for
+     pending L2T flush before cleaning caches" (Igalia, May 2026). */
+  if (v3d->ver < V3D_GEN_71
+      && wait_for (!(V3D_CORE_READ (core, V3D_CTL_L2TCACTL) & V3D_L2TCACTL_L2TFLS)))
+    plat_log (v3d, "Timeout waiting for L2T flush before clean", 0);
   V3D_CORE_WRITE (core, V3D_CTL_L2TCACTL, V3D_L2TCACTL_TMUWCF);
   if (wait_for (!(V3D_CORE_READ (core, V3D_CTL_L2TCACTL) & V3D_L2TCACTL_TMUWCF)))
     plat_log (v3d, "Timeout waiting for TMU write combiner flush", 0);

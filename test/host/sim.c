@@ -25,13 +25,23 @@ static int resets, auto_finish, logs;
 static uint8_t *area;
 static uint32_t area_pages = 4096;	/* 16 MB */
 static uint8_t claimed[4096];
-static int claim_fails, claims;	/* (0.25) */
+static int claim_fails, claims, releases;	/* (0.25, 0.26) */
 static uint32_t pt[1 << 20];
+
+/* (0.26) an L2T flush can be left pending for a few reads, and a TMU
+   write combiner flush started while one is counts as a clobber
+   (GFXH-1897) */
+static int l2t_pending, l2t_clobbers;
 
 uint32_t
 v3d_rd (struct v3d_dev *v3d, int bank, uint32_t off)
 {
   (void) v3d;
+  if (bank == V3D_BANK_CORE0 && off == V3D_CTL_L2TCACTL && l2t_pending)
+    {
+      l2t_pending--;
+      return regs[bank][off / 4] | V3D_L2TCACTL_L2TFLS;
+    }
   return regs[bank][off / 4];
 }
 
@@ -63,7 +73,11 @@ v3d_wr (struct v3d_dev *v3d, int bank, uint32_t off, uint32_t val)
   if (bank == V3D_BANK_HUB && off == V3D_MMU_CTL)
     val &= ~V3D_MMU_CTL_TLB_CLEARING;
   if (bank == V3D_BANK_CORE0 && off == V3D_CTL_L2TCACTL)
-    val &= ~(V3D_L2TCACTL_TMUWCF | V3D_L2TCACTL_L2TFLS);
+    {
+      if (l2t_pending && (val & V3D_L2TCACTL_TMUWCF))
+	l2t_clobbers++;
+      val &= ~(V3D_L2TCACTL_TMUWCF | V3D_L2TCACTL_L2TFLS);
+    }
   if (!(bank == V3D_BANK_CORE0 && off == V3D_CTL_INT_CLR)
       && !(bank == V3D_BANK_HUB && off == V3D_HUB_INT_CLR))
     regs[bank][off / 4] = val;
@@ -118,6 +132,7 @@ void
 plat_pages_release (struct v3d_dev *v3d, uint32_t first, uint32_t n)
 {
   (void) v3d;
+  releases++;
   for (uint32_t p = first; p < first + n; p++)
     claimed[p] = 0;
 }
@@ -1293,6 +1308,74 @@ test_025_pool (void)
   teardown ();
 }
 
+/* (0.26) inside a GraphicsV call (no_page_ops) nothing claims or gives
+   back RISC OS memory; it is done at the next v3d_service outside */
+static void
+test_026_no_page_ops (void)
+{
+  setup (42);
+  CHECK (v3d_hw_probe (dev) == 0 && v3d_init (dev) == 0);
+  int f = v3d_open (dev, 5);
+  uint32_t a = bo_new (f, 4 * 4096, 0), b = bo_new (f, 6 * 4096, 0);
+  CHECK (gem_close (f, a) == 0 && dev->pool_pages == 4);
+  int base = pages_claimed ();
+  dev->pool_max = 4;
+  /* a close past the limit: kept, for later */
+  dev->no_page_ops = 1;
+  int c0 = claims, r0 = releases;
+  CHECK (gem_close (f, b) == 0);
+  CHECK (releases == r0 && dev->pool_pages == 10 && dev->page_work_due);
+  CHECK (pages_claimed () == base);
+  /* a BO that would need claims: refused, nothing claimed or given back */
+  struct drm_v3d_create_bo big = { .size = 20 * 4096 };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_CREATE_BO, &big) == -V3D_ENOMEM);
+  CHECK (claims == c0 && releases == r0 && dev->pool_pages == 10);
+  /* one the kept pages hold: fine */
+  uint32_t off;
+  uint32_t k = bo_new (f, 3 * 4096, &off);
+  CHECK (k && claims == c0 && releases == r0 && dev->pool_pages == 7);
+  /* an import goes clear of the kept pages */
+  static uint8_t mem[2 * 4096] __attribute__ ((aligned (4096)));
+  struct drm_riscos_import_memory im = { .address = (uintptr_t) mem, .size = 2 * 4096 };
+  CHECK (ioctl_ (f, DRM_IOCTL_RISCOS_IMPORT_MEMORY, &im) == 0);
+  for (uint32_t p = im.offset >> 12; p < (im.offset >> 12) + 2; p++)
+    CHECK (!((dev->page_backed[p >> 5] >> (p & 31)) & 1));
+  CHECK (releases == r0 && dev->pool_pages == 7);
+  /* the binner's memory isn't topped up in here */
+  int ob = dev->overflow_pool[--dev->noverflow_pool];
+  uint32_t n0 = dev->noverflow_pool;
+  dev->page_work_due = 0;
+  v3d_service (dev);
+  CHECK (dev->noverflow_pool == n0 && claims == c0 && dev->page_work_due);
+  /* trimming asked for in here: later too */
+  v3d_pool_trim (dev, 0);
+  CHECK (releases == r0 && dev->pool_pages == 7);
+  /* outside: the work is done */
+  dev->no_page_ops = 0;
+  v3d_service (dev);
+  CHECK (!dev->page_work_due && dev->pool_pages <= dev->pool_max);
+  CHECK (dev->noverflow_pool > n0 && claims > c0);
+  v3d_bo_put (dev, ob);			/* the one taken out above */
+  CHECK (gem_close (f, k) == 0 && gem_close (f, im.handle) == 0);
+  dev->pool_max = V3D_POOL_DEFAULT;
+  /* the last program closing inside: its pages stay until outside */
+  uint32_t c = bo_new (f, 5 * 4096, 0);
+  CHECK (gem_close (f, c) == 0 && dev->pool_pages >= 5);
+  dev->no_page_ops = 1;
+  r0 = releases;
+  v3d_close (dev, f);
+  CHECK (releases == r0 && dev->pool_pages >= 5 && dev->page_work_due);
+  dev->no_page_ops = 0;
+  v3d_service (dev);
+  CHECK (dev->pool_pages == 0 && !dev->page_work_due && releases > r0);
+  /* GFXH-1897: the clean waits for a pending L2T flush first */
+  l2t_pending = 5;
+  int lg = logs;
+  v3d_clean_caches (dev);
+  CHECK (l2t_clobbers == 0 && l2t_pending == 0 && logs == lg);
+  teardown ();
+}
+
 int
 main (void)
 {
@@ -1307,6 +1390,7 @@ main (void)
   test_017_fill ();
   test_many ();
   test_025_pool ();
+  test_026_no_page_ops ();
   printf ("%d checks, %d failed\n", checks, failures);
   return failures != 0;
 }

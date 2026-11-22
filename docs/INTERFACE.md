@@ -185,6 +185,15 @@ zeroed as before, so a new BO still starts all zeroes, as on Linux.
   `bo_creates, bo_from_pool, pages_reused, pages_claimed` (`__u32`) and
   `create_ns, zero_ns` (`__u64`) at the end.
 
+## No memory calls inside GraphicsV (0.26)
+
+While V3DRender is handling a GraphicsV call (the desktop's copies and fills),
+it claims and frees no RISC OS memory: each such call issues
+Service_MemoryMoved to the Wimp in the middle of its redraw. Freed pages stay
+kept, the binner's memory isn't topped up, and that work is done from a
+transient callback, or at a program's next call into V3DRender. Nothing
+changes for programs.
+
 ## After a hang (0.13)
 
 As Linux (`drm_sched_resubmit_jobs`), only the job that hung is ended as

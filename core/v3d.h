@@ -202,6 +202,13 @@ struct v3d_dev
      OS_Memory call */
   uint32_t *page_backed, *page_backed_cached;
   uint32_t pool_pages, pool_max;
+  /* (0.26) set by the platform while it is inside a call where RISC OS
+     memory mustn't be claimed or given back (GraphicsV: each claim or
+     release tells the Wimp memory moved, in the middle of its redraw;
+     this froze Rob Heaton's V3DDriver). Pages that would have gone back
+     stay pooled, the binner's memory isn't topped up, and page_work_due
+     asks the platform to call v3d_service again from somewhere safe. */
+  int no_page_ops, page_work_due;
   uint16_t overflow_pool[V3D_OVERFLOW_POOL];
   volatile uint32_t noverflow_pool;
 

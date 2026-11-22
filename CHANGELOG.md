@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.26: no memory calls inside GraphicsV; GFXH-1897 (22 November 2026)
+
+From Rob Heaton's V3DDriver development log, read against V3DRender.
+
+- **Nothing inside a GraphicsV call claims or gives back RISC OS memory.**
+  - Each `OS_DynamicArea` 21/22 call tells the Wimp memory has moved (Service_MemoryMoved). Inside a GraphicsV call, the Wimp is still in the middle of its redraw. Rob found this was what froze V3DDriver whenever the Task Manager was open.
+  - V3DRender's 2D buffers were always claimed at `*V3DRender 2D on`. But the desktop's copies and fills go through the driver's ordinary submit path, and its housekeeping could still claim or release memory: topping up the binner's overflow memory, giving back a finished program's buffers, and (0.25) giving back kept pages to make room for a new screen mapping.
+  - Now, while V3DRender is inside GraphicsV (`no_page_ops`):
+    - freed pages stay kept even past the pool's limit;
+    - a new screen mapping goes only where no kept pages are, and if there is no such place the operation is left to the CPU;
+    - nothing is claimed;
+    - the binner's memory isn't topped up.
+  - The postponed work runs from a transient callback (`OS_AddCallBack`) as RISC OS leaves SVC mode, or at a program's next call into V3DRender, whichever comes first. The callback is removed on `*RMKill`.
+  - 0.21's rule (no desktop 2D while a program has the GPU open) hid most of this. Without this change, relaxing that rule would have exposed it.
+- **GFXH-1897:** on V3D before 7.1, writing L2TCACTL while an L2T flush is still pending clobbers the flush. Cleaning the GPU's caches (after a compute job, and for the cache-clean queue) now waits for any pending L2T flush first. This is the same change as Linux's "drm/v3d: Wait for pending L2T flush before cleaning caches" (Igalia, May 2026, in a series to fix Pi 4 freezes). Rob made it in V3DDriver too. The series' other patches are for Linux's runtime power management, which V3DRender doesn't have.
+- **Checked against Rob's log and already right:**
+  - core and hub interrupts both acknowledged on the one level-triggered line, and the device vector always claimed;
+  - a running V3D recognised from the hardware, not the firmware's clock flag (which always reads off);
+  - the VDU write address forgotten at GraphicsV 2 and Service_PreModeChange;
+  - one-pass scrolls in his per-axis order;
+  - buffer pages mapped Normal non-cacheable (bit 5 alone);
+  - a DSB before each job starts, and only SLCACTL's documented bits written.
+  - Not needed: his 510-tile bands (a V3DRender list holds about 4,000 tiles; a 4K screen is 2,040).
+- **Tests:**
+  - Host 2129: inside GraphicsV a close past the limit keeps its pages; a BO needing claims is refused with nothing claimed or released, while one that fits kept pages is made; an import goes clear of kept pages; the overflow memory isn't topped up and trimming waits; outside, it is all done; the last program closing inside leaves its pages until outside. Also a simulated pending L2T flush that the clean must wait for. Removing either fix fails the tests.
+  - Emulator 54154: a closed program's finished job, released by the desktop's next fill, makes no OS_DynamicArea call during the fill. One callback is asked for, not repeated while pending; it preserves every register and gives the pages back. Without the GraphicsV guard, 4 checks fail.
+- **Kit 29:** as kit 28, needing 0.26.
+
 ## 0.25: freed GPU memory kept for the next buffer (22 November 2026)
 
 From riscos-mesa and the web browser (Strada's profile on the Pi, 22 Nov). About 5% of the web page task's busy time was in `DRM_IOCTL_V3D_CREATE_BO`, the largest item in the GPU library. WebKit and Skia make and drop textures and render targets all the time while a page scrolls.

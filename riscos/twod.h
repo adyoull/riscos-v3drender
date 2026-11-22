@@ -50,4 +50,7 @@ void twod_mode_changed (void);
 void twod_files_closed (void);
 int gfxv_c (uint32_t *r);
 
+/* (0.26) module.c: the driver's postponed memory work, from a callback */
+void v3d_later (void);
+
 #endif

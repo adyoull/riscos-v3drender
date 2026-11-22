@@ -352,12 +352,30 @@ copy (const uint32_t *p)
   return 1;
 }
 
-/* r[0..9]: the vector's registers. 1: claimed (r[4] = 0). */
+static int gfxv_body (uint32_t *r);
+
+/* r[0..9]: the vector's registers. 1: claimed (r[4] = 0).
+   (0.26) Nothing in here claims or gives back RISC OS memory: that
+   tells the Wimp memory moved in the middle of its redraw, the cause of
+   Rob Heaton's V3DDriver freezing with the Task Manager open. What the
+   driver would have done is left for a callback. */
 int
 gfxv_c (uint32_t *r)
 {
   if (!v3d || r[4] >> 16 || twod.mode == TWOD_OFF)	/* driver 0, head 0 only (as BCMVideo) */
     return 0;
+  int was = v3d->no_page_ops;
+  v3d->no_page_ops = 1;
+  int claimed = gfxv_body (r);
+  v3d->no_page_ops = was;
+  if (!was && v3d->page_work_due)
+    v3d_later ();
+  return claimed;
+}
+
+static int
+gfxv_body (uint32_t *r)
+{
   uint32_t reason = r[4] & 0xFFFF;
   if (reason == 6)			/* SetDMAAddress: R0 = 3, where the VDU writes */
     {
