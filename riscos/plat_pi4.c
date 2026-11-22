@@ -635,6 +635,26 @@ plat_cache_inval (const void *p, uint32_t bytes)
   cache_inval_range (p, (const char *) p + bytes);
 }
 
+/* (0.25) A new BO's pages zeroed in 64-byte bursts of STM: the mapping
+   is usually Normal non-cacheable, where each burst goes to memory as
+   whole write-buffer lines (memset's single words did not). */
+void
+plat_zero_pages (void *p, uint32_t bytes)
+{
+  uint32_t *w = p, *end = (uint32_t *) ((uint8_t *) p + bytes);
+  if (!bytes)
+    return;
+  __asm__ volatile ("mov r2, #0\n\tmov r3, #0\n\tmov r4, #0\n\tmov r5, #0\n\t"
+		    "mov r6, #0\n\tmov r7, #0\n\tmov r8, #0\n\tmov r12, #0\n"
+		    "1:\tstmia %0!, {r2-r8, r12}\n\t"
+		    "stmia %0!, {r2-r8, r12}\n\t"
+		    "cmp %0, %1\n\t"
+		    "blo 1b"
+		    : "+r" (w)
+		    : "r" (end)
+		    : "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r12", "cc", "memory");
+}
+
 void
 plat_pages_release (struct v3d_dev *v3d, uint32_t first, uint32_t n)
 {

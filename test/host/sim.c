@@ -25,6 +25,7 @@ static int resets, auto_finish, logs;
 static uint8_t *area;
 static uint32_t area_pages = 4096;	/* 16 MB */
 static uint8_t claimed[4096];
+static int claim_fails, claims;	/* (0.25) */
 static uint32_t pt[1 << 20];
 
 uint32_t
@@ -85,6 +86,7 @@ plat_page_pa (struct v3d_dev *v3d, uint32_t page)
 
 static unsigned cache_cleans, cache_invals, last_cached;
 uint64_t plat_virt_pa (uintptr_t va) { return va ? 0x400000000ull + (va & ~4095ull) : 0; }
+void plat_zero_pages (void *p, uint32_t n) { memset (p, 0, n); }
 void plat_cache_clean (const void *p, uint32_t n) { (void) p; (void) n; cache_cleans++; }
 void plat_cache_inval (const void *p, uint32_t n) { (void) p; (void) n; cache_invals++; }
 
@@ -93,6 +95,12 @@ plat_pages_claim (struct v3d_dev *v3d, uint32_t first, uint32_t n, int cached)
 {
   last_cached = (unsigned) cached;
   (void) v3d;
+  if (claim_fails)
+    {
+      claim_fails--;
+      return -1;
+    }
+  claims++;
   for (uint32_t p = first; p < first + n; p++)
     {
       if (claimed[p])
@@ -1193,6 +1201,98 @@ test_many (void)
   teardown ();
 }
 
+/* (0.25) the page pool: freed pages stay claimed, in place, for the next
+   BO of their kind; given back past pool_max, when the last program
+   closes, and when a claim fails */
+static int
+gem_close (int f, uint32_t h)
+{
+  struct drm_gem_close gc = { .handle = h };
+  return ioctl_ (f, DRM_IOCTL_GEM_CLOSE, &gc);
+}
+
+static int
+pages_claimed (void)
+{
+  int n = 0;
+  for (uint32_t p = 0; p < area_pages; p++)
+    n += claimed[p];
+  return n;
+}
+
+static void
+test_025_pool (void)
+{
+  setup (42);
+  CHECK (v3d_hw_probe (dev) == 0 && v3d_init (dev) == 0);
+  CHECK (dev->pool_max == V3D_POOL_DEFAULT && dev->pool_pages == 0);
+  int f = v3d_open (dev, 5);
+  int base = pages_claimed ();
+  uint32_t off, off2, h = bo_new (f, 5 * 4096, &off);
+  memset (area + off, 0x55, 5 * 4096);
+  int c0 = claims;
+  CHECK (gem_close (f, h) == 0);
+  CHECK (dev->pool_pages == 5 && pages_claimed () == base + 5);	/* kept */
+  h = bo_new (f, 5 * 4096 - 100, &off2);
+  CHECK (off2 == off && claims == c0);				/* no claim */
+  CHECK (dev->stats.bo_from_pool == 1 && dev->stats.pages_reused == 5);
+  CHECK (area[off] == 0 && area[off + 5 * 4096 - 1] == 0);	/* zeroed again */
+  CHECK (dev->pool_pages == 0 && dev->pages_used >= 5);
+  /* a smaller one in the pool's pages */
+  CHECK (gem_close (f, h) == 0);
+  h = bo_new (f, 2 * 4096, &off2);
+  CHECK (claims == c0 && off2 == off && dev->pool_pages == 3);
+  /* cached: the pooled pages aren't its kind */
+  uint32_t claimed0 = dev->stats.pages_claimed;
+  struct drm_v3d_create_bo cc = { .size = 3 * 4096, .flags = DRM_RISCOS_BO_CPU_CACHED };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_CREATE_BO, &cc) == 0);
+  CHECK (dev->stats.pages_claimed == claimed0 + 3 && last_cached == 1);
+  CHECK (dev->bos[dev->files[f].handles[cc.handle]].cached == 1);
+  CHECK (gem_close (f, cc.handle) == 0);
+  int p_before = (int) dev->pool_pages;
+  struct drm_v3d_create_bo cc2 = { .size = 3 * 4096, .flags = DRM_RISCOS_BO_CPU_CACHED };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_CREATE_BO, &cc2) == 0);
+  CHECK (cc2.offset == cc.offset && (int) dev->pool_pages == p_before - 3);
+  CHECK (gem_close (f, cc2.handle) == 0);
+  CHECK (gem_close (f, h) == 0);
+  /* the pool's limit */
+  dev->pool_max = 8;
+  v3d_pool_trim (dev, dev->pool_max);
+  CHECK (dev->pool_pages <= 8);
+  uint32_t a = bo_new (f, 6 * 4096, 0), b = bo_new (f, 6 * 4096, 0);
+  CHECK (gem_close (f, a) == 0 && gem_close (f, b) == 0);
+  CHECK (dev->pool_pages <= 8);
+  CHECK (pages_claimed () == base + (int) dev->pool_pages);
+  /* a claim that fails: the pool goes back and it's tried again */
+  dev->pool_max = V3D_POOL_DEFAULT;
+  uint32_t big = bo_new (f, 40 * 4096, 0);
+  CHECK (gem_close (f, big) == 0 && dev->pool_pages >= 40);
+  claim_fails = 1;
+  uint32_t big2 = bo_new (f, 300 * 4096, 0);	/* more than the pool */
+  CHECK (big2 && claim_fails == 0);
+  CHECK (pages_claimed () == base + 300 + (int) dev->pool_pages);
+  claim_fails = 2;
+  struct drm_v3d_create_bo nope = { .size = 64 * 4096 };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_CREATE_BO, &nope) == -V3D_ENOMEM);
+  CHECK (dev->pool_pages == 0 && pages_claimed () == base + 300);
+  claim_fails = 0;
+  /* with only the desktop's 2D open, nothing is kept */
+  CHECK (gem_close (f, big2) == 0 && dev->pool_pages == 300);
+  int f2 = v3d_open (dev, 6);
+  dev->twod.file = f2;
+  v3d_close (dev, f);				/* the last program */
+  CHECK (dev->pool_pages == 0 && pages_claimed () == base);
+  uint32_t t = bo_new (f2, 4096, 0);
+  CHECK (gem_close (f2, t) == 0 && dev->pool_pages == 0);
+  dev->twod.file = -1;
+  v3d_close (dev, f2);
+  CHECK (dev->stats.bo_creates >= 10 && dev->stats.create_ns >= dev->stats.zero_ns);
+  printf ("  pool: %u of %u BOs from the pool, %u pages reused, %u claimed\n",
+	  dev->stats.bo_from_pool, dev->stats.bo_creates, dev->stats.pages_reused,
+	  dev->stats.pages_claimed);
+  teardown ();
+}
+
 int
 main (void)
 {
@@ -1206,6 +1306,7 @@ main (void)
   test_017_exec ();
   test_017_fill ();
   test_many ();
+  test_025_pool ();
   printf ("%d checks, %d failed\n", checks, failures);
   return failures != 0;
 }

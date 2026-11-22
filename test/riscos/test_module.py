@@ -393,6 +393,7 @@ class Pi4(Machine):
                     else:
                         pa = page * 4096
                     a["claimed"][idx] = pa
+                    a["claims"] = a.get("claims", 0) + 1     # (0.25)
             elif reason == 22:
                 addr = a["base"] + idx * 4096
                 if page == 0xFFFFFFFF:
@@ -452,7 +453,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 24 and out[8] != 0, "version 0.24, statistics in r8")
+    check(out[0] == 25 and out[8] != 0, "version 0.25, statistics in r8")
     check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
@@ -552,7 +553,16 @@ def main():
     ret, _ = ioctl(R["IOCTL_WAIT_BO"], struct.pack("<IIQ", handle, 0, 0))
     check(ret == 0, "WAIT_BO")
     ret, _ = ioctl(R["IOCTL_GEM_CLOSE"], struct.pack("<II", handle, 0))
-    check(ret == 0 and (offset >> 12) not in bo_area["mapped"], "GEM_CLOSE gives the pages back")
+    check(ret == 0 and (offset >> 12) in bo_area["mapped"] and m.word(pt["base"] + (offset >> 12) * 4) == 0,
+          "(0.25) GEM_CLOSE keeps the pages for the next BO, but not in the GPU's MMU")
+    m.uc.mem_write(addr, b"\x55" * 16)
+    claims0 = bo_area.get("claims", 0)
+    ret, b = ioctl(R["IOCTL_CREATE_BO"], struct.pack("<IIII", 20000, 0, 0, 0))
+    _, _, handle, off2 = struct.unpack("<IIII", b)
+    check(ret == 0 and off2 == offset and bo_area.get("claims", 0) == claims0
+          and bytes(m.uc.mem_read(addr, 16)) == b"\0" * 16,
+          "(0.25) the next BO of its size gets those pages, zeroed, with no claim")
+    ret, _ = ioctl(R["IOCTL_GEM_CLOSE"], struct.pack("<II", handle, 0))
     check(m.core.get(R["CTL_INT_STS"], 0) == 0, "the interrupts were acknowledged")
 
     check(all(fl & (1 << 5) for fl in bo_area.get("flags", {}).values()),
@@ -732,8 +742,24 @@ def main():
         check(err is None and m.saved and m.saved[0] == "RAM::0.$.Dump" and m.saved[1] == 0xFFD
               and m.saved[2] == d["size"], "*V3DDump saves it: %s" % (m.saved,))
 
+    m.output = ""
+    mod.command("V3DRender")
+    check("Buffers made:" in m.output and " all from kept pages" in m.output,
+          "(0.25) *V3DRender shows buffers made from the pool")
     out, e = mod.swi(2, {0: f})
     check(e is None, "V3DRender_Close")
+    m.output = ""
+    mod.command("V3DRender")
+    check("kept for reuse (KB): 0 (up to 16384," in m.output,
+          "(0.25) the last program closed: nothing kept (%s)"
+          % [l for l in m.output.splitlines() if "kept" in l])
+    err = mod.command("V3DRender", "pool 4", 1)
+    m.output = ""
+    mod.command("V3DRender")
+    check(err is None and "(up to 4096," in m.output, "(0.25) *V3DRender pool 4")
+    err = mod.command("V3DRender", "pool", 1)
+    check(err is not None, "(0.25) *V3DRender pool needs a number")
+    mod.command("V3DRender", "pool 16", 1)
     # (0.10) *V3DReset: the GPU reset; "all": every file closed
     out, e = mod.swi(1, {0: 0})
     check(e is None, "a file left open by a program that stopped")

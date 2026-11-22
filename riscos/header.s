@@ -28,7 +28,7 @@ module_start:
 	.word	flags - module_start
 
 title:	.asciz	"V3DRender"
-help:	.asciz	"V3DRender\t0.24 (22 Nov 2026) Pi 4 GPU driver (V3D 4.2), after Linux's v3d"
+help:	.asciz	"V3DRender\t0.25 (22 Nov 2026) Pi 4 GPU driver (V3D 4.2), after Linux's v3d"
 swi_names:
 	.asciz	"V3DRender\0Info\0Open\0Close\0Ioctl\0Reset\0Debug\0"
 	.align	2
@@ -65,7 +65,7 @@ commands:
 	.word	reset_help - module_start
 	.word	0
 cmd_help:
-	.asciz	"*V3DRender shows the GPU, its memory and what it has done. *V3DRender 2D on|async|off turns the GPU's desktop copies and fills (window moves, scrolls, plain rectangles) on, on without waiting for each, or off; *V3DRender 2D fills on|off, the fills alone; *V3DRender 2D alongside on|off, also while a program has the GPU open (off: the CPU does them then); *V3DRender 2D limits [copy-bytes copy-rows fill-bytes fill-rows fill-bytes-a-tile], below which the CPU does them (none: the defaults, 1024 8 4096 16 0; V3DDriver's were 2048 16 16384 32 4500).\rSyntax: *V3DRender [2D on|async|off|fills on|off|alongside on|off|limits [5 numbers]|zero]"
+	.asciz	"*V3DRender shows the GPU, its memory and what it has done. *V3DRender 2D on|async|off turns the GPU's desktop copies and fills (window moves, scrolls, plain rectangles) on, on without waiting for each, or off; *V3DRender 2D fills on|off, the fills alone; *V3DRender 2D alongside on|off, also while a program has the GPU open (off: the CPU does them then); *V3DRender 2D limits [copy-bytes copy-rows fill-bytes fill-rows fill-bytes-a-tile], below which the CPU does them (none: the defaults, 1024 8 4096 16 0; V3DDriver's were 2048 16 16384 32 4500). *V3DRender pool <MB> sets how much freed GPU memory is kept for programs' next buffers (default 16; 0 keeps none).\rSyntax: *V3DRender [pool <MB>|2D on|async|off|fills on|off|alongside on|off|limits [5 numbers]|zero]"
 dump_help:
 	.asciz	"*V3DDump saves what the GPU's buffers held when a job first hung since V3DRender was loaded, with its registers, for V3DRender's tools/v3ddump.py.\rSyntax: *V3DDump <file>"
 reset_help:

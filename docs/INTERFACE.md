@@ -163,6 +163,28 @@ them (fewer TLB misses on big textures and frames). `*V3DRender` shows how
 much is in each. Nothing changes for programs: `DRM_V3D_PARAM_SUPPORTS_SUPER_PAGES`
 isn't read by Mesa.
 
+## Freed pages kept for reuse (0.25)
+
+Nothing changes in the requests. When a program closes a BO
+(`DRM_IOCTL_GEM_CLOSE`, or the last job using it is released), its pages stay
+claimed and mapped where they were, up to 16 MB. They stay only while a
+program other than the desktop's 2D has the GPU open. The next
+`DRM_IOCTL_V3D_CREATE_BO` of the same kind (cached for the CPU or not) that
+fits in them uses them with no `OS_Memory` or `OS_DynamicArea` call. It is
+zeroed as before, so a new BO still starts all zeroes, as on Linux.
+
+- New places and imported memory are put clear of the kept pages where there
+  is room, so the pool stays usable.
+- If RISC OS can't give a CREATE_BO its pages, the kept pages are given back
+  and the claim is tried once more.
+- When the last program closes its file, the kept pages go back to RISC OS.
+- `*V3DRender pool <MB>` sets the limit (0 keeps none). `*V3DRender` shows
+  how much is kept, how many BOs were made and how many came wholly from kept
+  pages, and the average time of a CREATE_BO (and of its zeroing).
+- The statistics (`struct v3d_stats`, r8 of `V3DRender_Info`) gain
+  `bo_creates, bo_from_pool, pages_reused, pages_claimed` (`__u32`) and
+  `create_ns, zero_ns` (`__u64`) at the end.
+
 ## After a hang (0.13)
 
 As Linux (`drm_sched_resubmit_jobs`), only the job that hung is ended as

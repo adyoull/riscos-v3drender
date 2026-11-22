@@ -31,7 +31,7 @@
 #include "plat_pi4.h"
 #include "twod.h"
 
-#define VERSION 24		/* 0.24 */
+#define VERSION 25		/* 0.25 */
 #define SWI_BASE 0x5AFC0
 #ifndef OS_SetVarVal
 #define OS_SetVarVal		0x24
@@ -204,6 +204,12 @@ hardware_text (char *buf, uint32_t size, uint32_t *need)
       tput (&t, " (");
       tdec (&t, low * 4);
       tput (&t, " KB below 1 GB)");
+    }
+  if (dev->pool_pages)
+    {
+      tput (&t, ", ");
+      tdec (&t, dev->pool_pages * 4);
+      tput (&t, " KB kept for reuse");
     }
   tput (&t, ", of ");
   tdec (&t, dev->area_pages / 256);
@@ -825,9 +831,24 @@ mod_command (int index, const char *tail, int argc)
     return 0;
   if (index == 0 && argc > 0)
     {
-      /* *V3DRender 2D on|async|off (0.17) */
       while (*tail == ' ')
 	tail++;
+      if ((tail[0] | 32) == 'p')		/* (0.25) pool <MB>: 0 keeps none */
+	{
+	  while (*tail > ' ')
+	    tail++;
+	  while (*tail == ' ')
+	    tail++;
+	  if (*tail < '0' || *tail > '9')
+	    return ERR (err_syntax);
+	  uint32_t mb = parse_dec (tail);
+	  if (mb > dev->area_pages / 256)
+	    mb = dev->area_pages / 256;
+	  dev->pool_max = mb * 256;
+	  v3d_pool_trim (dev, dev->pool_max);
+	  return 0;
+	}
+      /* *V3DRender 2D on|async|off (0.17) */
       if (tail[0] != '2' || (tail[1] | 32) != 'd')
 	return ERR (err_syntax);
       tail += 2;
@@ -1004,6 +1025,13 @@ mod_command (int index, const char *tail, int argc)
     }
   line ("Buffer memory (KB):    ", dev->area_pages * 4);
   line ("  in use (KB):         ", dev->pages_used * 4);
+  /* (0.25) freed BOs' pages kept for the next */
+  write0 ("  kept for reuse (KB): ");
+  write_dec (dev->pool_pages * 4);
+  write0 (" (up to ");
+  write_dec (dev->pool_max * 4);
+  write0 (", while a program has the GPU open)");
+  newline ();
   /* (0.12) how much of it is above 1 GB, out of the VideoCore's reach */
   uint32_t high, low, big, super;
   count_pages (&high, &low, &big, &super);
@@ -1161,6 +1189,26 @@ mod_command (int index, const char *tail, int argc)
       write0 (" a program using the GPU, ");
       write_dec (twod.errors);
       write0 (" errors");
+      newline ();
+    }
+  /* (0.25) CREATE_BO's cost */
+  if (s->bo_creates)
+    {
+      write0 ("Buffers made:          ");
+      write_dec (s->bo_creates);
+      write0 (" (");
+      write_dec (s->bo_from_pool);
+      write0 (" all from kept pages); ");
+      write_dec (s->pages_reused);
+      write0 (" pages reused, ");
+      write_dec (s->pages_claimed);
+      write0 (" claimed from RISC OS");
+      newline ();
+      write0 ("  time each (us):      ");
+      write_dec ((uint32_t) (s->create_ns / 1000u / s->bo_creates));
+      write0 (" (zeroing ");
+      write_dec ((uint32_t) (s->zero_ns / 1000u / s->bo_creates));
+      write0 (")");
       newline ();
     }
   if (s->page_moves)

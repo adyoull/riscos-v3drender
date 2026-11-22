@@ -142,6 +142,9 @@ v3d_close (struct v3d_dev *v3d, int f)
   plat_free (file->handles);
   plat_free (file->syncobjs);
   memset (file, 0, sizeof *file);
+  /* (0.25) the last program gone: its pooled pages back to RISC OS
+     (BOs its jobs still hold go back as the jobs are released) */
+  v3d_pool_trim (v3d, v3d_programs_open (v3d) ? v3d->pool_max : 0);
 }
 
 /* ---- v3d_bo.c ---- */

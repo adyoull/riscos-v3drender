@@ -159,6 +159,10 @@ struct v3d_stats
   uint32_t cache_deferred;		/* invalidates put off: more jobs to come */
   uint32_t pad2;
   uint32_t page_moves, pages_moved;	/* (0.23) the OS moved imported pages */
+  /* (0.25) CREATE_BO: how many, how many pages came from the pool or
+     from RISC OS, and the time they took (zeroing their pages, part of it) */
+  uint32_t bo_creates, bo_from_pool, pages_reused, pages_claimed;
+  uint64_t create_ns, zero_ns;
 };
 
 struct v3d_dev
@@ -191,6 +195,13 @@ struct v3d_dev
   struct v3d_bo bos[V3D_MAX_BOS];	/* [0] unused */
   uint32_t *page_map;			/* a bit per page: in use */
   uint32_t pages_used;
+  /* (0.25) the page pool: a bit per page claimed from RISC OS (and
+     mapped for the CPU), and whether that mapping is cacheable. A freed
+     BO's pages stay claimed, in place, up to pool_max of them, while a
+     program has the GPU open; the next BO that fits uses them with no
+     OS_Memory call */
+  uint32_t *page_backed, *page_backed_cached;
+  uint32_t pool_pages, pool_max;
   uint16_t overflow_pool[V3D_OVERFLOW_POOL];
   volatile uint32_t noverflow_pool;
 
@@ -336,6 +347,10 @@ static inline int v3d_bo_cpu_cached (const struct v3d_bo *b)
 { return b->cached || (b->imported && !b->nocache); }
 void v3d_bo_get (struct v3d_dev *v3d, int bo);
 void v3d_bo_put (struct v3d_dev *v3d, int bo);	/* not with interrupts off */
+/* (0.25) the page pool's pages back to RISC OS, down to `keep` */
+void v3d_pool_trim (struct v3d_dev *v3d, uint32_t keep);
+int v3d_programs_open (struct v3d_dev *v3d);	/* other than the desktop's 2D */
+#define V3D_POOL_DEFAULT 4096u		/* pages: 16 MB */
 int v3d_bo_init (struct v3d_dev *v3d);
 void v3d_bo_fini (struct v3d_dev *v3d);
 static inline uint32_t v3d_bo_offset (struct v3d_dev *v3d, int bo)

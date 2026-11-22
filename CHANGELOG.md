@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.25: freed GPU memory kept for the next buffer (22 November 2026)
+
+From riscos-mesa and the web browser (Strada's profile on the Pi, 22 Nov). About 5% of the web page task's busy time was in `DRM_IOCTL_V3D_CREATE_BO`, the largest item in the GPU library. WebKit and Skia make and drop textures and render targets all the time while a page scrolls.
+
+- **Why each one cost so much:** every CREATE_BO claimed its pages from RISC OS (`OS_Memory 12` for runs above 1 GB, then `OS_DynamicArea` 21/22 claim and map), and every GEM_CLOSE gave them back. Those specific-page claims are also what makes RISC OS move other memory's pages: the "Pages moved by the OS" that 0.23 follows, each of which makes the GPU wait.
+- **The page pool:**
+  - A freed BO's pages now stay claimed and mapped where they are, up to 16 MB, while a program other than the desktop's 2D has the GPU open. Their GPU page-table entries are still removed.
+  - The next BO of the same kind (cached for the CPU or not) that fits in kept pages uses them, with no OS call. The search tries 1 MB- and 64 KB-aligned places first for big BOs, then any.
+  - Kept pages of the other kind in a BO's place are given back and claimed again with the right mapping.
+  - New places and imported memory go clear of the kept pages where there is room.
+  - If RISC OS can't supply a BO's pages, the kept pages go back and the claim is tried once more.
+  - When the last program closes, everything kept goes back. `*V3DRender pool <MB>` sets the limit (0 keeps none).
+- **Zeroing:** a new BO still starts all zeroes, as on Linux. The pages are now written in 64-byte STM bursts, which suit the uncached (bufferable) mapping better than memset's single words.
+- **A BO still used by a queued or running job** already kept its pages and PTEs until that job was released (since 0.01: jobs hold references). Mesa's third suggestion needed no change.
+- **`*V3DRender` shows:**
+  - "kept for reuse (KB)" and its limit;
+  - "Buffers made": how many, how many came wholly from kept pages, pages reused and claimed;
+  - the average CREATE_BO time and its zeroing part.
+  - Configure's RISC3D window (reason 4) adds the kept amount to "GPU memory".
+  - The statistics block gains `bo_creates, bo_from_pool, pages_reused, pages_claimed, create_ns, zero_ns` at its end.
+- **Tests:**
+  - Host 2103: reuse in place with no claim and zeroed; a smaller BO in a bigger freed one; cached and uncached kept apart; the limit; a failed claim gives the pool back and succeeds on the retry; two failures give ENOMEM with nothing kept; nothing kept with only the 2D file open; everything back at close.
+  - Emulator 54122: GEM_CLOSE keeps the pages, and the next BO gets them zeroed with no claim; nothing kept after the last close; `*V3DRender pool`.
+- **Kit 28:** as kit 27, needing 0.25.
+
 ## 0.24: start-up that says how far it got; safer when it fails (22 November 2026)
 
 For the Compute Module 4 in an R-Comp Ne.X.T (Chris Hughes, via RISC3D). At start-up with !RISC3D it reports "Internal error, trap while in trap handler: ... abort on instruction fetch at &00000000". It probably has PackMan's V3DRender 0.15 or 0.16, from before 0.20's power-domain fix.

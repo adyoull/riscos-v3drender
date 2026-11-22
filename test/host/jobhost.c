@@ -45,6 +45,7 @@ uint64_t plat_virt_pa (uintptr_t va)
 unsigned cache_cleans, cache_invals;
 void plat_cache_clean (const void *p, uint32_t n) { (void) p; (void) n; cache_cleans++; }
 void plat_cache_inval (const void *p, uint32_t n) { (void) p; (void) n; cache_invals++; }
+void plat_zero_pages (void *p, uint32_t n) { memset (p, 0, n); }
 void plat_pages_release (struct v3d_dev *v, uint32_t f, uint32_t n) { (void) v; (void) f; (void) n; }
 void plat_gpu_reset (struct v3d_dev *v) { (void) v; resets++; hung = 0; csd_hung = 0; memset (busy, 0, sizeof busy); }
 uint32_t plat_time_cs (void) { return time_cs; }

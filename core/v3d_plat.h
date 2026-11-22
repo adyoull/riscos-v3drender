@@ -23,6 +23,9 @@ void plat_cache_clean (const void *p, uint32_t bytes);
 void plat_cache_inval (const void *p, uint32_t bytes);	/* (0.14: clean and invalidate) */
 void plat_pages_release (struct v3d_dev *v3d, uint32_t first, uint32_t n);
 uint64_t plat_page_pa (struct v3d_dev *v3d, uint32_t page);	/* after claim */
+/* (0.25) zero `bytes` (a multiple of 4 KB) at p, page aligned: the BO's
+   CPU mapping, which is usually not cached, so in bursts */
+void plat_zero_pages (void *p, uint32_t bytes);
 
 /* the GPU's own reset line (Linux: reset_control_reset, or the bridge) */
 void plat_gpu_reset (struct v3d_dev *v3d);

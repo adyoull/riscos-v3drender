@@ -122,6 +122,15 @@ OS when there is one; the RISC OS layer here is the Pi 4's.
 Not yet: performance counters, ioctl extensions (multisync), the CPU
 queue, sharing BOs between files (PRIME).
 
+### Freed GPU memory kept for reuse (0.25)
+
+A closed buffer's pages stay claimed, up to 16 MB, while a program has the
+GPU open. The next buffer that fits uses them without asking RISC OS for
+memory. This makes the browser's constant texture making and dropping
+cheaper, and RISC OS moves fewer other programs' pages. The pages go back
+when the last program closes. `*V3DRender pool <MB>` sets the limit (0 keeps
+none).
+
 ## SWIs (provisional)
 
 See [`docs/INTERFACE.md`](docs/INTERFACE.md) for the requests, their
