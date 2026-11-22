@@ -23,8 +23,18 @@
    program's Mesa (its v3d driver, through libdrm) sends the work
    straight to V3DRender_Ioctl, without RISC3D's command stream.
 
+   The interrupt handling follows Rob Heaton's V3DDriver
+   (github.com/robheaton/riscos-v3d, GPL-2.0-or-later, v3d_irq.c):
+   device 10 claimed with the module's private word as r12, and
+   HAL_IRQClear found once with OS_Hardware 1 and called directly from
+   the handler with its static base, not as a SWI; so does the refusal
+   to load beside V3DDriver. (0.26) Keeping RISC OS memory calls out of
+   GraphicsV (v3d_later, callback_c) follows a finding in his
+   development log: they froze V3DDriver with the Task Manager open.
+
    SPDX-License-Identifier: GPL-2.0-or-later
-   Copyright (c) 2026 Andrew Youll */
+   Copyright (c) 2026 Andrew Youll; the work it follows (C) 2026 Rob
+   Heaton */
 #include "cmodule.h"
 #include "v3d.h"
 #include "v3d_regs.h"

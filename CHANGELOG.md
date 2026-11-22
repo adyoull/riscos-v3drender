@@ -28,6 +28,7 @@ From Rob Heaton's V3DDriver development log, read against V3DRender.
   - Emulator 54154: a closed program's finished job, released by the desktop's next fill, makes no OS_DynamicArea call during the fill. One callback is asked for, not repeated while pending; it preserves every register and gives the pages back. Without the GraphicsV guard, 4 checks fail.
 - **Kit 29:** as kit 28, needing 0.26.
 - **Release notes** (`release-notes/v0.26.md`, after the tag; the module is unchanged): everything since 0.16, the last published release, with the owner's RISCOSmark results (Rectangle Copy 519 with 2D off, 3,679 with it on, at 1920x1200). The README's status is brought up to 0.26.
+- **Credit to Rob Heaton** (after the tag; the module builds byte-for-byte the same): `riscos/module.c`'s header now says its interrupt handling (device 10 with the private word, HAL_IRQClear called directly) and the refusal to load beside V3DDriver follow V3DDriver, and that 0.26's GraphicsV rule comes from his log. NOTICE item 3 says the same. The other files taken from his work already said so: `riscos/plat_pi4.c`, `core/v3d_2d.c` and `riscos/twod.c`.
 
 ## 0.25: freed GPU memory kept for the next buffer (22 November 2026)
 

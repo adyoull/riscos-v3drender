@@ -34,8 +34,9 @@ Material from other projects
    later, Copyright (C) 2026 Rob Heaton. riscos/plat_pi4.c follows its
    Pi 4 power-up (v3d_power_on), its check for a V3D that is already
    running (v3d_hw_is_up), its bus-gate stop (v3d_stop_bridge), its
-   firmware clock calls (v3d_clock.c) and its interrupt device number
-   (v3d_irq.c). Since 0.17, core/v3d_2d.c and riscos/twod.c follow its
+   firmware clock calls (v3d_clock.c), and riscos/module.c its interrupt
+   handling (v3d_irq.c): device 10 claimed with the private word, and
+   HAL_IRQClear called directly from the handler. Since 0.17, core/v3d_2d.c and riscos/twod.c follow its
    GraphicsV Render acceleration (gfxv_accel.c, cl_copy.c, cl_fill.c,
    cl_common.c, cl_packets.h, screen_info.c): the decoding of GraphicsV
    13 ops 1 and 2 and of a solid ECF, the driver 0 / head 0 rule,
@@ -45,7 +46,11 @@ Material from other projects
    pass tile order for overlapping copies, the RGBA8 and BGR565 formats
    and 16bpp colour widening, and the size limits Rob measured on the
    hardware. They are written again, not copied, for V3DRender's queues
-   and MMU. V3DDriver took the register offsets and the power-on
+   and MMU. Since 0.26, V3DRender keeps RISC OS memory calls out of
+   GraphicsV (core/v3d_bo.c, core/v3d_sched.c, riscos/twod.c,
+   riscos/module.c) and waits for a pending L2T flush before a cache
+   clean (core/v3d_hw.c, also Linux's), after findings in his
+   development log. V3DDriver took the register offsets and the power-on
    sequence from rpi4-gpu-bare-metal-examples (MIT licence, Copyright (c)
    2022 Random06457, github.com/Random06457/rpi4-gpu-bare-metal-examples),
    whose notice follows.
