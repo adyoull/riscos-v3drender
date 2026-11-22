@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.24: start-up that says how far it got; safer when it fails (22 November 2026)
+
+For the Compute Module 4 in an R-Comp Ne.X.T (Chris Hughes, via RISC3D). At start-up with !RISC3D it reports "Internal error, trap while in trap handler: ... abort on instruction fetch at &00000000". It probably has PackMan's V3DRender 0.15 or 0.16, from before 0.20's power-domain fix.
+
+- **`V3DRender$Step`:** start-up sets it as it goes: `1 checks`, `2 map`, `3 power`, `4 probe`, `5 memory`, `6 init`, `7 interrupt`, `8 RISC3D`, `ready`. If a machine stops during start-up, `*Show V3DRender$Step` afterwards says which step it was.
+- **A start that fails part way no longer tears down a GPU it never set up.** If the buffer area or page table couldn't be made, older versions ran the full shutdown (v3d_fini) on a device that was never initialised. Now only the V3D's interrupts are turned off.
+- **The interrupt handler** runs V3DRender's code only once the device is set up, and never calls a null HAL routine. If `OS_Hardware` gives no HAL_IRQClear, start-up stops with an error rather than jumping to 0 at the first interrupt.
+- **Tests:** emulator 54119:
+  - V3DRender$Step follows every step to "ready";
+  - with no buffer area at all, start-up fails at "5 memory", returns the error, and leaves nothing claimed (no device vector, no areas).
+
 ## 0.23: imported memory follows pages the OS moves (21 November 2026)
 
 - **The likely cause of the web browser's broken GPU drawing** (render jobs hanging, frames lost, MMU errors, and with 2D off too):

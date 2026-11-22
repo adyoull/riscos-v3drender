@@ -251,6 +251,13 @@ class Pi4(Machine):
                         out(1, pa >> 32)
                         return
                 return self._fail(number, 0xFC, "bad address")
+        if base == 0x24:                          # (0.24) OS_SetVarVal
+            if not hasattr(self, "vars"):
+                self.vars = {}
+            name = self.cstr(r[0])
+            self.vars[name] = bytes(self.uc.mem_read(r[1], r[2])).decode("latin-1")
+            self.var_log = getattr(self, "var_log", []) + [(name, self.vars[name])]
+            return
         if base == 0x23:                          # OS_ReadVarVal
             name = self.cstr(r[0])
             val = getattr(self, "vars", {}).get(name)
@@ -358,6 +365,8 @@ class Pi4(Machine):
             size = (r[5] + 0xFFFFF) & ~0xFFFFF
             if size > 0x10000000:
                 return self._fail(number, 0x1E5, "Not enough address space")  # 1 GB won't fit here
+            if getattr(self, "pmp_fail", False):
+                return self._fail(number, 0x1E5, "Not enough address space")  # (0.24) none at all
             self.areas[n] = dict(base=self.area_next, pages=r[9], claimed={}, mapped={},
                                  name=self.cstr(r[8]))
             out(1, n)
@@ -443,7 +452,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 23 and out[8] != 0, "version 0.23, statistics in r8")
+    check(out[0] == 24 and out[8] != 0, "version 0.24, statistics in r8")
     check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
@@ -1094,6 +1103,9 @@ def test_domain_first(data):
           % getattr(m, "read_while_off", 0))
     check(getattr(m, "domain_sets", [None])[0] == 1, "the domain turned on first (%s)" % getattr(m, "domain_sets", None))
     check(err is None, "loads (%s)" % err)
+    steps = [v for n, v in getattr(m, "var_log", []) if n == "V3DRender$Step"]
+    check(steps == ["1 checks", "2 map", "3 power", "4 probe", "5 memory", "6 init", "7 interrupt",
+                    "8 RISC3D", "ready"], "(0.24) V3DRender$Step follows start-up: %s" % steps)
     if err is None:
         # (0.22) an MMU error's client is named (0.21 printed through an
         # unrelocated pointer table, and aborted in OS_Write0 on the Pi)
@@ -1109,9 +1121,23 @@ def test_domain_first(data):
         mod.finalise()
 
 
+def test_start_fails_part_way(data):
+    """(0.24) start-up failing after the device is set up (no buffer area):
+    an error, no v3d_fini on a half-made device, nothing claimed, and
+    V3DRender$Step says where"""
+    m = Pi4()
+    m.pmp_fail = True
+    mod = Module(m, data, 0x20010000)
+    err = initialise(mod, "NoWFI")
+    steps = [v for n, v in getattr(m, "var_log", []) if n == "V3DRender$Step"]
+    check(err is not None and steps[-1:] == ["5 memory"], "fails at step 5: %s (%s)" % (steps[-1:], err))
+    check(getattr(m, "vector", None) is None and not m.areas, "nothing left claimed")
+
+
 try:
     main()
     test_2d(open(sys.argv[1], "rb").read())
+    test_start_fails_part_way(open(sys.argv[1], "rb").read())
     test_domain_first(open(sys.argv[1], "rb").read())
 except (EmuError, UcError) as e:
     failures += 1

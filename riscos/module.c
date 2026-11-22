@@ -31,8 +31,11 @@
 #include "plat_pi4.h"
 #include "twod.h"
 
-#define VERSION 23		/* 0.23 */
+#define VERSION 24		/* 0.24 */
 #define SWI_BASE 0x5AFC0
+#ifndef OS_SetVarVal
+#define OS_SetVarVal		0x24
+#endif
 #define OS_ClaimDeviceVector	0x4B
 #define OS_ReleaseDeviceVector	0x4C
 #define Wimp_ReadSysInfo	0x400F2
@@ -79,13 +82,16 @@ hal (unsigned entry)
   return swix_regs (OS_Hardware, &r);
 }
 
+static int inited;			/* (0.24) v3d_init succeeded */
+
 /* the interrupt (from irq_entry) */
 void
 irq_c (void)
 {
-  if (dev)
+  if (dev && inited)
     v3d_irq (dev);
-  call_hal (IRQ_DEVICE, hal_irqclear, hal_sb);
+  if (hal_irqclear)
+    call_hal (IRQ_DEVICE, hal_irqclear, hal_sb);
 }
 
 /* (0.22) why the screen can't be used, as text (a switch: the module
@@ -530,19 +536,35 @@ module_present (const char *name)
   return !swix_regs (OS_Module, &r);
 }
 
+/* (0.24) How far start-up got, in V3DRender$Step: if a machine stops
+   during start-up (a CM4 at boot), *Show V3DRender$Step afterwards says
+   which step it was. Ends as "ready". */
+static void
+step (const char *what)
+{
+  const char *e = what;
+  while (*e)
+    e++;
+  regs r = {{ (unsigned) "V3DRender$Step", (unsigned) what, (unsigned) (e - what), 0, 0 }};
+  swix_regs (OS_SetVarVal, &r);
+}
+
 oserror *
 mod_final (int fatal)
 {
   (void) fatal;
   deregister_risc3d ();
   twod_final ();			/* (0.17) GraphicsV released first */
-  if (dev)
+  if (dev && inited)
     {
-      v3d_fini (dev);
+      v3d_fini (dev);			/* (it needs the interrupt to finish jobs) */
       /* the next driver (V3DDriver, say) may expect the MMU off */
       v3d_wr (dev, V3D_BANK_HUB, V3D_MMU_CTL, 0);
       v3d_wr (dev, V3D_BANK_HUB, V3D_MMUC_CONTROL, 0);
     }
+  else if (dev)
+    v3d_irq_disable (dev);		/* (0.24) a start that failed part way: no v3d_fini on it */
+  inited = 0;
   if (vector_claimed)
     {
       hal (HAL_IRQDisable);
@@ -643,17 +665,21 @@ mod_init (const char *tail, int instance, void *pw)
   if (pi4_area_mb > 2048)
     pi4_area_mb = 2048;
 
+  step ("1 checks");
   if (module_present ("V3DDriver"))
     return ERR (err_v3ddriver);
   if (pi4_soc () != 3)
     return ERR (err_notpi4);
+  step ("2 map");
   oserror *e = pi4_map ();
   if (e)
     return e;
+  step ("3 power");
   e = pi4_power_on (&mapped_up);
   if (e)
     return e;
 
+  step ("4 probe");
   dev = plat_alloc (sizeof *dev);
   if (!dev)
     return ERR (err_mem);
@@ -665,19 +691,28 @@ mod_init (const char *tail, int instance, void *pw)
       return ERR (err_nogpu);
     }
   pi4_cache_init ();
+  step ("5 memory");
   e = pi4_memory (dev);
   if (e)
     goto fail;
+  step ("6 init");
   if (v3d_init (dev))
     {
       e = ERR (err_mem);
       goto fail;
     }
+  inited = 1;
 
+  step ("7 interrupt");
   regs h = {{ 0, 0, 0, 0, 0, 0, 0, 0, 1, HAL_IRQClear }};	/* OS_Hardware 1 */
   e = swix_regs (OS_Hardware, &h);
   if (e)
     goto fail;
+  if (!h.r[0])
+    {
+      e = ERR (err_nogpu);		/* (0.24) no HAL_IRQClear: never call 0 */
+      goto fail;
+    }
   hal_irqclear = (void *) h.r[0];
   hal_sb = h.r[1];
   regs c = {{ IRQ_DEVICE, (unsigned) irq_entry, (unsigned) pw }};
@@ -689,10 +724,12 @@ mod_init (const char *tail, int instance, void *pw)
   if (e)
     goto fail;
 
+  step ("8 RISC3D");
   register_risc3d ();
   twod_init (dev, pw);
   if (twod_wanted != TWOD_OFF)
     twod_set (twod_wanted);		/* (0.17) the desktop's copies */
+  step ("ready");
   return 0;
 
 fail:
