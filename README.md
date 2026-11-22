@@ -6,18 +6,22 @@ runs in the program and sends its work to V3DRender, as it sends it to
 Linux's v3d driver through a DRM device. RISC3D lists V3DRender as the
 machine's 3D driver.
 
-**Version 0.16, 18 November 2026.** Tested on a Raspberry Pi 4 under native
+**Version 0.26, 22 November 2026.** Tested on a Raspberry Pi 4 under native
 RISC OS 5:
 
 - Mesa's v3d driver (Mesa 26.1.6, through riscos-mesa) draws with it:
-  OpenGL 2.1 and GLES 2, 100 frames of 1920x1080 in 37 cs.
+  OpenGL 2.1 and GLES 2, 100 frames of 1920x1080 in 37 cs; the web
+  browser's GPU compositing, 404,818 jobs with no errors (0.23).
+- The desktop's copies and fills on the GPU (0.17, off by default):
+  RISCOSmark's Rectangle Copy 7.1 times as fast at 1920x1200 (519 to
+  3,679), pixel-identical to the CPU's.
 - The kit's own jobs: cleared 1080p frames at 540 a second, the TFU
   (texture formatting), compute on every QPU, the GPU's MMU, its
   interrupt, and the reset after a hang.
 - Buffers of 64 KB and 1 MB or more in the GPU MMU's big entries, as
   Linux; GPU time per program; a hang ends only the job that hung.
-- Cache work for big cached or imported buffers done with the kernel's
-  whole-cache routines, once a frame (0.15).
+- Imported memory follows pages RISC OS moves (0.23); freed buffers'
+  pages kept for the next (0.25).
 - Frames read back by the CPU at about 2.6 to 3.9 GB/s from cached
   buffers or the program's own memory (151 MB/s from ordinary buffers).
 - It works alongside ReelHWAccel: Reel decodes on the VideoCore while
