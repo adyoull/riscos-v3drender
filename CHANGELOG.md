@@ -27,6 +27,7 @@ From Rob Heaton's V3DDriver development log, read against V3DRender.
   - Host 2129: inside GraphicsV a close past the limit keeps its pages; a BO needing claims is refused with nothing claimed or released, while one that fits kept pages is made; an import goes clear of kept pages; the overflow memory isn't topped up and trimming waits; outside, it is all done; the last program closing inside leaves its pages until outside. Also a simulated pending L2T flush that the clean must wait for. Removing either fix fails the tests.
   - Emulator 54154: a closed program's finished job, released by the desktop's next fill, makes no OS_DynamicArea call during the fill. One callback is asked for, not repeated while pending; it preserves every register and gives the pages back. Without the GraphicsV guard, 4 checks fail.
 - **Kit 29:** as kit 28, needing 0.26.
+- **Release notes** (`release-notes/v0.26.md`, after the tag; the module is unchanged): everything since 0.16, the last published release, with the owner's RISCOSmark results (Rectangle Copy 519 with 2D off, 3,679 with it on, at 1920x1200). The README's status is brought up to 0.26.
 
 ## 0.25: freed GPU memory kept for the next buffer (22 November 2026)
 
