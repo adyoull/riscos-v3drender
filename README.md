@@ -6,7 +6,7 @@ runs in the program and sends its work to V3DRender, as it sends it to
 Linux's v3d driver through a DRM device. RISC3D lists V3DRender as the
 machine's 3D driver.
 
-**Version 0.26, 22 November 2026.** Tested on a Raspberry Pi 4 under native
+**Version 0.33, 23 November 2026.** Tested on a Raspberry Pi 4 under native
 RISC OS 5:
 
 - Mesa's v3d driver (Mesa 26.1.6, through riscos-mesa) draws with it:
@@ -15,6 +15,12 @@ RISC OS 5:
 - The desktop's copies and fills on the GPU (0.17, off by default):
   RISCOSmark's Rectangle Copy 7.1 times as fast at 1920x1200 (519 to
   3,679), pixel-identical to the CPU's.
+- EGL windows shown by the GPU (0.31, `DRM_IOCTL_RISCOS_PRESENT`): about
+  565 frames a second for a 640x400 window against 66 with the CPU plot,
+  in 16M, 64K and 32K colour desktops in either RGB order (0.32), with
+  menus and other windows staying on top.
+- Buffer area at its full size even where RISC OS 5.30 clamps it, and up
+  to 65,535 buffers (0.30; Doom 3 needs about 5,300).
 - The kit's own jobs: cleared 1080p frames at 540 a second, the TFU
   (texture formatting), compute on every QPU, the GPU's MMU, its
   interrupt, and the reset after a hang.
@@ -196,6 +202,11 @@ Load options (0.09), in any order:
   - `LowMem`: no memory is asked for above 1 GB.
   - Options are whole words since 0.27; before that, any word starting
     "no" was taken as `NoWFI`.
+  - (0.33) `V3DRender$Options` gives these when V3DRender is loaded with
+    none, as RISC3D does at start-up. After start-up the log notes the
+    first of each later event (RISC3D's calls, the first program, the
+    first mode change), so a machine that stops later in its boot shows
+    how far it got.
 - `2D` or `2DAsync` (0.17): the desktop's copies and fills on the GPU,
   waited for or not (above). Without it, `V3DRender$2D` (`on`, `async`).
 
