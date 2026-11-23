@@ -34,7 +34,7 @@ v3d_file_valid (struct v3d_dev *v3d, int file)
 static int
 lookup_bo (struct v3d_dev *v3d, int file, uint32_t handle)
 {
-  if (handle == 0 || handle >= V3D_MAX_HANDLES)
+  if (handle == 0 || handle >= v3d->files[file].nhandles)
     return 0;
   return v3d->files[file].handles[handle];
 }
@@ -112,7 +112,9 @@ v3d_open (struct v3d_dev *v3d, uint32_t owner)
     if (!v3d->files[f].used)
       {
 	struct v3d_file *file = &v3d->files[f];
-	file->handles = plat_alloc (V3D_MAX_HANDLES * sizeof *file->handles);
+	file->handles = plat_alloc (V3D_FIRST_HANDLES * sizeof *file->handles);
+	if (file->handles)
+	  memset (file->handles, 0, V3D_FIRST_HANDLES * sizeof *file->handles);
 	file->syncobjs = plat_alloc (V3D_MAX_SYNCOBJS * sizeof *file->syncobjs);
 	if (!file->handles || !file->syncobjs)
 	  {
@@ -122,6 +124,7 @@ v3d_open (struct v3d_dev *v3d, uint32_t owner)
 	  }
 	file->used = 1;
 	file->owner = owner;
+	file->nhandles = V3D_FIRST_HANDLES;
 	return f;
       }
   return -V3D_EBUSY;
@@ -136,7 +139,7 @@ v3d_close (struct v3d_dev *v3d, int f)
     return;
   v3d_service (v3d);
   struct v3d_file *file = &v3d->files[f];
-  for (int h = 1; h < V3D_MAX_HANDLES; h++)
+  for (uint32_t h = 1; h < file->nhandles; h++)
     if (file->handles[h])
       v3d_bo_put (v3d, file->handles[h]);
   plat_free (file->handles);
@@ -154,19 +157,19 @@ create_bo (struct v3d_dev *v3d, int f, struct drm_v3d_create_bo *args)
 {
   if (args->flags & ~DRM_RISCOS_BO_CPU_CACHED)
     return -V3D_EINVAL;
-  uint16_t *handles = v3d->files[f].handles;
-  uint32_t h;
-  for (h = 1; h < V3D_MAX_HANDLES && handles[h]; h++)
-    ;
-  if (h == V3D_MAX_HANDLES)
-    return -V3D_ENOSPC;
+  uint32_t h = v3d_handle_slot (v3d, f);	/* (0.30) grows */
+  if (!h)
+    {
+      v3d_bo_refused (v3d, V3D_REFUSED_HANDLES, args->size);
+      return -V3D_ENOSPC;
+    }
   v3d_service (v3d);
   int bo, ret = v3d_bo_create_cached (v3d, args->size,
 				      (args->flags & DRM_RISCOS_BO_CPU_CACHED) != 0, &bo);
   if (ret)
     return ret;
   v3d->bos[bo].file = (int16_t) f;
-  handles[h] = (uint16_t) bo;
+  v3d->files[f].handles[h] = (uint16_t) bo;
   args->handle = h;
   args->offset = v3d_bo_offset (v3d, bo);
   return 0;
@@ -176,11 +179,8 @@ create_bo (struct v3d_dev *v3d, int f, struct drm_v3d_create_bo *args)
 static int
 import_memory (struct v3d_dev *v3d, int f, struct drm_riscos_import_memory *args)
 {
-  uint16_t *handles = v3d->files[f].handles;
-  uint32_t h;
-  for (h = 1; h < V3D_MAX_HANDLES && handles[h]; h++)
-    ;
-  if (h == V3D_MAX_HANDLES)
+  uint32_t h = v3d_handle_slot (v3d, f);	/* (0.30) grows */
+  if (!h)
     return -V3D_ENOMEM;
   v3d_service (v3d);
   if ((args->flags & ~DRM_RISCOS_IMPORT_UNCACHED)
@@ -191,7 +191,7 @@ import_memory (struct v3d_dev *v3d, int f, struct drm_riscos_import_memory *args
     return ret;
   v3d->bos[bo].file = (int16_t) f;
   v3d->bos[bo].nocache = (args->flags & DRM_RISCOS_IMPORT_UNCACHED) != 0;
-  handles[h] = (uint16_t) bo;
+  v3d->files[f].handles[h] = (uint16_t) bo;
   args->handle = h;
   args->offset = v3d_bo_offset (v3d, bo);
   return 0;

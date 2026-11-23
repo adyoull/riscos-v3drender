@@ -397,6 +397,16 @@ class Pi4(Machine):
 
     def dynamic_area(self, number, r, out):
         reason = r[0]
+        if reason == 8:                           # (0.30) clamps, as RISC OS 5.30's 128 MB
+            old = getattr(self, "da_clamps", [0xFFFFFFFF, 0x8000000, 0xFFFFF000])
+            new = list(old)
+            for i in range(3):
+                if r[1 + i]:
+                    new[i] = r[1 + i]
+            self.da_clamps = new
+            self.clamp_calls = getattr(self, "clamp_calls", []) + [tuple(new)]
+            out(1, old[0]); out(2, old[1]); out(3, old[2])
+            return
         if reason == 2 and r[1] == 2:             # (0.17) the screen's area
             out(4, self.screen_da_flags)
             return
@@ -419,10 +429,13 @@ class Pi4(Machine):
                 return self._fail(number, 0x1E5, "Not enough address space")  # 1 GB won't fit here
             if getattr(self, "pmp_fail", False):
                 return self._fail(number, 0x1E5, "Not enough address space")  # (0.24) none at all
+            clamp = getattr(self, "da_clamps", [0xFFFFFFFF, 0x8000000, 0xFFFFF000])[1]
+            got = min(r[5], clamp)                # (0.30) the clamp, as RISC OS
             self.areas[n] = dict(base=self.area_next, pages=r[9], claimed={}, mapped={},
-                                 name=self.cstr(r[8]))
+                                 name=self.cstr(r[8]), got=got)
             out(1, n)
             out(3, self.area_next)
+            out(5, got)
             self.area_next += size
             return
         if reason == 1:
@@ -507,7 +520,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 29 and out[8] != 0, "version 0.29, statistics in r8")
+    check(out[0] == 30 and out[8] != 0, "version 0.30, statistics in r8")
     check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
@@ -1316,6 +1329,44 @@ def test_start_fails_part_way(data):
     check(err is not None and steps[-1:] == ["5 memory"], "fails at step 5: %s (%s)" % (steps[-1:], err))
     check(getattr(m, "vector", None) is None and not m.areas, "nothing left claimed")
 
+def test_030_clamp(data):
+    """(0.30) the 128 MB clamp lifted for V3DRender's area and put back;
+    the area's real size used"""
+    m = Pi4()
+    mod = Module(m, data, 0x20010000)
+    check(initialise(mod, "NoWFI") is None, "loads")
+    bo = [a for a in m.areas.values() if a["name"] == "V3DRender buffers"][0]
+    check(bo["got"] == 256 << 20, "(0.30) the buffer area is the 256 MB asked for (%x)" % bo["got"])
+    check(m.da_clamps[1] == 0x8000000 and (0, 0xFFFFFFFF, 0) != m.clamp_calls[0]
+          and m.clamp_calls[0][1] == 0xFFFFFFFF and m.clamp_calls[-1][1] == 0x8000000,
+          "(0.30) the clamp lifted, then put back (%s)" % m.clamp_calls)
+    m.output = ""
+    mod.command("V3DRender")
+    check("Buffer memory (KB):    262144\n" in m.output.replace("\r", "")
+          and "buffers (BOs):" in m.output and "of 1023 (grows to 65535)" in m.output,
+          "(0.30) *V3DRender: the area and the BO table")
+    mod.finalise(0)
+    # a clamp it can't lift (an older OS): it uses what it got, and says so
+    m = Pi4()
+    m.da_clamps = [0xFFFFFFFF, 0x4000000, 0xFFFFF000]
+    real_swi = m.dynamic_area
+    def no8(number, r, out):
+        if r[0] == 8:
+            return m._fail(number, 0x1E6, "Unknown dynamic area reason")
+        return real_swi(number, r, out)
+    m.dynamic_area = no8
+    mod = Module(m, data, 0x20010000)
+    check(initialise(mod, "NoWFI") is None, "loads with a 64 MB clamp")
+    m.output = ""
+    mod.command("V3DRender")
+    check("Buffer memory (KB):    65536 (asked for 262144: RISC OS gave less)" in m.output,
+          "(0.30) *V3DRender says the area is smaller than asked (%s)"
+          % [l for l in m.output.splitlines() if "Buffer memory" in l])
+    o, e = mod.swi(0, {})
+    check(e is None and o[4] == 64 << 20, "(0.30) Info r4: the real area size")
+    mod.finalise(0)
+
+
 def test_027_log_and_options(data):
     """(0.27) the start-up log and the diagnostic load options"""
     # every step in the log, appended, as text
@@ -1331,7 +1382,7 @@ def test_027_log_and_options(data):
     check(any(l.startswith("options: NoWFI Size 256 MB; 2048 MB of RAM") for l in lines),
           "(0.27) the options and RAM in the log")
     check(any(l.startswith("HAL_IRQClear at &") for l in lines), "(0.27) HAL_IRQClear's address")
-    check(m.ftypes.get("$.V3DLog") == 0xFFF and log.splitlines()[0].split(" cs  ")[1].startswith("V3DRender 0.29: "),
+    check(m.ftypes.get("$.V3DLog") == 0xFFF and log.splitlines()[0].split(" cs  ")[1].startswith("V3DRender 0.30: "),
           "(0.27) a text file, each line timed and versioned")
     # the first interrupt, noted from a callback
     m.finish(R["INT_FRDONE"])
@@ -1422,6 +1473,7 @@ try:
     test_start_fails_part_way(open(sys.argv[1], "rb").read())
     test_domain_first(open(sys.argv[1], "rb").read())
     test_027_log_and_options(open(sys.argv[1], "rb").read())
+    test_030_clamp(open(sys.argv[1], "rb").read())
 except (EmuError, UcError) as e:
     failures += 1
     print("FAIL:", e)

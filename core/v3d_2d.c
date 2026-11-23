@@ -112,17 +112,14 @@ v3d_2d_screen (struct v3d_dev *v3d, uint64_t pa, uint32_t bytes)
   uint64_t to = (pa + bytes + 0xFFFF) & ~(uint64_t) 0xFFFF;
   if (to - from > 0x40000000u)
     return -V3D_EINVAL;
-  uint16_t *handles = v3d->files[t->file].handles;
-  uint32_t h;
-  for (h = 1; h < V3D_MAX_HANDLES && handles[h]; h++)
-    ;
-  if (h == V3D_MAX_HANDLES)
+  uint32_t h = v3d_handle_slot (v3d, t->file);
+  if (!h)
     return -V3D_ENOMEM;
   int bo, ret = v3d_bo_import_phys (v3d, from, (uint32_t) (to - from), &bo);
   if (ret)
     return ret;
   v3d->bos[bo].file = (int16_t) t->file;
-  handles[h] = (uint16_t) bo;
+  v3d->files[t->file].handles[h] = (uint16_t) bo;
   t->scr_handle = h;
   t->scr_gpu = v3d_bo_offset (v3d, bo) + (uint32_t) (pa - from);
   t->scr_pa = pa;

@@ -1,9 +1,9 @@
-| Desk2D: V3DRender 0.29's desktop copies and fills (window moves,
+| Desk2D: V3DRender 0.30's desktop copies and fills (window moves,
 | scrolls, plain rectangles) on the GPU. It draws on part of the screen,
 | checks the GPU's result against the CPU's, times both and writes
-| Results2D here. Run Check first (it loads V3DRender 0.29).
+| Results2D here. Run Check first (it loads V3DRender 0.30).
 Set V3DCheck$Dir <Obey$Dir>
-RMEnsure V3DRender 0.29 RMLoad <Obey$Dir>.V3DRender
-RMEnsure V3DRender 0.29 Error V3DRender 0.29 didn't load
+RMEnsure V3DRender 0.30 RMLoad <Obey$Dir>.V3DRender
+RMEnsure V3DRender 0.30 Error V3DRender 0.30 didn't load
 WimpSlot -min 8000K -max 8000K
 Run <Obey$Dir>.Draw2D

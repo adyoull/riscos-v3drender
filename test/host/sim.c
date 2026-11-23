@@ -1376,6 +1376,75 @@ test_026_no_page_ops (void)
   teardown ();
 }
 
+/* (0.30) BO and handle tables grow past their first 1024; refused
+   CREATE_BOs are counted by reason */
+static void
+test_030_tables (void)
+{
+  setup (42);
+  CHECK (v3d_hw_probe (dev) == 0 && v3d_init (dev) == 0);
+  CHECK (dev->nbos == V3D_FIRST_BOS);
+  int f = v3d_open (dev, 5);
+  CHECK (dev->files[f].nhandles == V3D_FIRST_HANDLES);
+  static uint32_t h[1500], off[1500];
+  int ok = 1;
+  for (int i = 0; i < 1500 && ok; i++)
+    {
+      h[i] = bo_new (f, 4096, &off[i]);
+      ok = h[i] != 0;
+      if (ok)
+	area[off[i]] = (uint8_t) i;
+    }
+  CHECK (ok && dev->nbos == 2 * V3D_FIRST_BOS && dev->files[f].nhandles == 2 * V3D_FIRST_HANDLES);
+  ok = 1;
+  for (int i = 0; i < 1500; i++)		/* every BO still where it was */
+    {
+      struct drm_v3d_get_bo_offset g = { .handle = h[i] };
+      ok &= ioctl_ (f, DRM_IOCTL_V3D_GET_BO_OFFSET, &g) == 0 && g.offset == off[i]
+	&& area[off[i]] == (uint8_t) i;
+    }
+  CHECK (ok);
+  CHECK (dev->stats.bo_refused == 0);
+  /* too big for the area */
+  struct drm_v3d_create_bo big = { .size = (uint32_t) dev->area_pages * 4096 };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_CREATE_BO, &big) == -V3D_ENOMEM);
+  CHECK (dev->stats.refused_space == 1 && dev->stats.refused_last_bytes == big.size);
+  /* RISC OS gives nothing */
+  claim_fails = 2;
+  struct drm_v3d_create_bo m = { .size = 64 * 4096 };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_CREATE_BO, &m) == -V3D_ENOMEM);
+  claim_fails = 0;
+  CHECK (dev->stats.refused_memory == 1 && dev->stats.bo_refused == 2);
+  /* no handle: a file whose table can't grow */
+  uint32_t keep = dev->files[f].nhandles;
+  for (uint32_t i = 1; i < keep; i++)
+    if (!dev->files[f].handles[i])
+      dev->files[f].handles[i] = 1;		/* (taken, for this test) */
+  dev->files[f].nhandles = V3D_MAX_HANDLES;	/* pretend it's at the limit */
+  uint16_t *real = dev->files[f].handles;
+  dev->files[f].handles = calloc (V3D_MAX_HANDLES, 2);
+  for (uint32_t i = 1; i < V3D_MAX_HANDLES; i++)
+    dev->files[f].handles[i] = 1;
+  struct drm_v3d_create_bo nh = { .size = 4096 };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_CREATE_BO, &nh) == -V3D_ENOSPC);
+  CHECK (dev->stats.refused_handles == 1 && dev->stats.bo_refused == 3);
+  free (dev->files[f].handles);
+  dev->files[f].handles = real;
+  dev->files[f].nhandles = keep;
+  for (uint32_t i = 1; i < keep; i++)
+    {
+      int used = 0;
+      for (int j = 0; j < 1500; j++)
+	used |= h[j] == i;
+      if (!used)
+	dev->files[f].handles[i] = 0;
+    }
+  for (int i = 0; i < 1500; i++)
+    CHECK (gem_close (f, h[i]) == 0);
+  v3d_close (dev, f);
+  teardown ();
+}
+
 int
 main (void)
 {
@@ -1391,6 +1460,7 @@ main (void)
   test_many ();
   test_025_pool ();
   test_026_no_page_ops ();
+  test_030_tables ();
   printf ("%d checks, %d failed\n", checks, failures);
   return failures != 0;
 }

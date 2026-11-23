@@ -57,9 +57,15 @@ enum v3d_bank { V3D_BANK_HUB, V3D_BANK_CORE0, V3D_BANK_SMS, V3D_BANK_BRIDGE, V3D
 
 /* Sizes (fixed tables: nothing is allocated with interrupts off) */
 #define V3D_MAX_FILES 32
-#define V3D_MAX_HANDLES 4096		/* per file */
+/* (0.30) BOs and each file's handles are tables that grow (doubling,
+   in SVC, swapped in with interrupts off) up to these: indices are 16
+   bits. 0.29 had fixed tables of 4096 handles a file and 8192 BOs;
+   Doom 3 makes about 5,300. */
+#define V3D_MAX_HANDLES 65536		/* per file (handles 1..65535) */
+#define V3D_FIRST_HANDLES 1024
 #define V3D_MAX_SYNCOBJS 256		/* per file */
-#define V3D_MAX_BOS 8192
+#define V3D_MAX_BOS 65536		/* BOs 1..65535 */
+#define V3D_FIRST_BOS 1024
 #define V3D_MAX_JOBS 256
 #define V3D_MAX_JOB_BOS 4096
 #define V3D_JOB_FEW_BOS 48		/* BO lists this short are kept in the job */
@@ -123,6 +129,7 @@ struct v3d_file
   uint32_t resets;			/* resets its jobs caused */
   uint32_t nstale;			/* its BOs waiting for a cache invalidate (0.11) */
   uint16_t *handles;			/* handle (from 1) -> BO */
+  uint32_t nhandles;			/* (0.30) its size; grows */
   uint64_t busy_ns[V3D_NQ];		/* (0.13) its jobs' time on the GPU */
   uint32_t done[V3D_NQ];		/* and how many finished */
   struct v3d_syncobj *syncobjs;		/* handle (from 1) */
@@ -163,6 +170,11 @@ struct v3d_stats
      from RISC OS, and the time they took (zeroing their pages, part of it) */
   uint32_t bo_creates, bo_from_pool, pages_reused, pages_claimed;
   uint64_t create_ns, zero_ns;
+  /* (0.30) CREATE_BOs refused, and why: no handle, no BO slot, no room
+     in the area's address space, RISC OS gave no memory; and the size of
+     the last one refused */
+  uint32_t bo_refused, refused_handles, refused_table, refused_space,
+    refused_memory, refused_last_bytes;
 };
 
 struct v3d_dev
@@ -192,7 +204,8 @@ struct v3d_dev
   uint32_t last_check_cs;
 
   /* buffers */
-  struct v3d_bo bos[V3D_MAX_BOS];	/* [0] unused */
+  struct v3d_bo *bos;			/* [0] unused; (0.30) grows */
+  uint32_t nbos, bo_hint;
   uint32_t *page_map;			/* a bit per page: in use */
   uint32_t pages_used;
   /* (0.25) the page pool: a bit per page claimed from RISC OS (and
@@ -356,7 +369,13 @@ void v3d_bo_get (struct v3d_dev *v3d, int bo);
 void v3d_bo_put (struct v3d_dev *v3d, int bo);	/* not with interrupts off */
 /* (0.25) the page pool's pages back to RISC OS, down to `keep` */
 void v3d_pool_trim (struct v3d_dev *v3d, uint32_t keep);
-int v3d_programs_open (struct v3d_dev *v3d);	/* other than the desktop's 2D */
+int v3d_programs_open (struct v3d_dev *v3d);
+/* (0.30) a free BO slot or a file's free handle, growing the table if
+   need be (0 if none can be had); and a refusal counted and logged */
+int v3d_bo_slot (struct v3d_dev *v3d);
+uint32_t v3d_handle_slot (struct v3d_dev *v3d, int file);
+enum { V3D_REFUSED_HANDLES, V3D_REFUSED_TABLE, V3D_REFUSED_SPACE, V3D_REFUSED_MEMORY };
+void v3d_bo_refused (struct v3d_dev *v3d, int why, uint64_t bytes);	/* other than the desktop's 2D */
 #define V3D_POOL_DEFAULT 4096u		/* pages: 16 MB */
 int v3d_bo_init (struct v3d_dev *v3d);
 void v3d_bo_fini (struct v3d_dev *v3d);

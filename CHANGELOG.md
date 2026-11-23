@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.30: the 128 MB area clamp; BO and handle tables that grow; refused buffers counted (23 November 2026)
+
+From RISC3D, passing on David Sharp's ports (ioquake3, Mupen64Plus, dhewm3) on a Pi 4 with RISC OS 5.30 and V3DRender 0.26. Both claims checked against the code first.
+
+- **The buffer area's real size.**
+  - *Claim:* on RISC OS 5.30, unless DAClamp has run first, the area stops at 128 MB, and BOs past it fail with "claim any failed: OS error &1D1"; `*V3DRender` still shows 262,144 KB.
+  - *Confirmed:* `pmp_create` took the size it asked for as the size it got. OS_DynamicArea 0 returns the clamped maximum in R5, which was ignored, so `area_pages` covered address space the area didn't have.
+  - *Fixed:*
+    - The area's size is now R5.
+    - The clamp for areas with a given maximum (OS_DynamicArea 8, R2) is lifted just while V3DRender makes its area, then put back to what it was. Nothing else in the system changes.
+    - If it can't be lifted (an older OS), V3DRender uses what it got.
+    - `*V3DRender`'s "Buffer memory" says when RISC OS gave less than was asked for. V3DRender_Info r4 is the real size.
+- **4,096 handles a file and 8,192 BOs.**
+  - *Claim:* Doom 3 makes about 5,300 BOs; CREATE_BO returns -ENOSPC past 4,096 handles, and the game crashes.
+  - *Confirmed:* fixed tables, `V3D_MAX_HANDLES` 4096, `V3D_MAX_BOS` 8192.
+  - *Fixed:* both are now tables that start at 1,024 and double as needed, up to 65,535 (indices are 16 bits).
+    - Growing is done in SVC: a new table, the old copied in, then the pointer swapped with interrupts off (the interrupt handler reads BOs) and the old freed.
+    - A free-slot hint keeps finding a BO cheap with thousands in use.
+- **Refused CREATE_BOs are counted and logged.**
+  - Each is counted by reason: no handle, BO table full, no room in the area, or no memory from RISC OS. The first of each kind goes in the log, and the size of the last refusal is kept.
+  - `*V3DRender` shows the BO table ("buffers (BOs): N of M (grows to 65535)") and a "refused" line when there are any.
+  - Statistics gain `bo_refused, refused_handles, refused_table, refused_space, refused_memory, refused_last_bytes` at the end.
+- **Tests:**
+  - Host 5142: 1,500 BOs in one file, so both tables grow from 1,024 to 2,048 with every BO and its contents still where they were; refusals counted for a BO too big for the area, for RISC OS giving no memory, and for a file with no handle left.
+  - Emulator 86752: RISC OS 5.30's 128 MB clamp emulated; the area gets its 256 MB and the clamp is put back; with a 64 MB clamp V3DRender can't lift, it uses 64 MB and says so in `*V3DRender` and Info r4.
+- **Kit 33:** as kit 32, needing 0.30.
+
 ## 0.29: "Z-layer complex overlays" in Configure's RISC3D window (23 November 2026)
 
 The owner asked for overlays layered as on Linux, in a way that stays compatible with VideoOverlay. On the native Pi this was already in the OS: BCMVideo (`s/GVOverlay`) creates VideoOverlay's overlays as firmware (dispmanx) layers.

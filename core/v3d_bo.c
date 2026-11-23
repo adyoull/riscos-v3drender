@@ -345,6 +345,86 @@ unpool_range (struct v3d_dev *v3d, uint32_t first, uint32_t n)
     }
 }
 
+/* (0.30) Tables that grow: a new one twice the size, the old copied in
+   and the pointer swapped with interrupts off (the interrupt handler
+   reads BOs), then the old freed. Never inside an interrupt. */
+static void *
+grow (void *old, uint32_t *n, uint32_t each, uint32_t max)
+{
+  uint32_t m = *n * 2 > max ? max : *n * 2;
+  if (m <= *n)
+    return 0;
+  uint8_t *t = plat_alloc (m * each);
+  if (!t)
+    return 0;
+  memcpy (t, old, *n * each);
+  memset (t + *n * each, 0, (m - *n) * each);
+  *n = m;
+  return t;
+}
+
+int
+v3d_bo_slot (struct v3d_dev *v3d)
+{
+  for (uint32_t i = 1; i < v3d->nbos; i++)
+    {
+      uint32_t bo = v3d->bo_hint + i - 1;
+      if (bo >= v3d->nbos)
+	bo -= v3d->nbos - 1;
+      if (!v3d->bos[bo].used)
+	{
+	  v3d->bo_hint = bo + 1 < v3d->nbos ? bo + 1 : 1;
+	  return (int) bo;
+	}
+    }
+  uint32_t was = v3d->nbos, n = was;
+  struct v3d_bo *t = grow (v3d->bos, &n, sizeof *t, V3D_MAX_BOS);
+  if (!t)
+    return 0;
+  unsigned s = plat_irq_off ();
+  struct v3d_bo *old = v3d->bos;
+  v3d->bos = t;
+  v3d->nbos = n;
+  plat_irq_restore (s);
+  plat_free (old);
+  v3d->bo_hint = was + 1;
+  return (int) was;
+}
+
+uint32_t
+v3d_handle_slot (struct v3d_dev *v3d, int f)
+{
+  struct v3d_file *file = &v3d->files[f];
+  for (uint32_t h = 1; h < file->nhandles; h++)
+    if (!file->handles[h])
+      return h;
+  uint32_t was = file->nhandles, n = was;
+  uint16_t *t = grow (file->handles, &n, sizeof *t, V3D_MAX_HANDLES);
+  if (!t)
+    return 0;
+  uint16_t *old = file->handles;
+  file->handles = t;			/* (handles aren't read by interrupts) */
+  file->nhandles = n;
+  plat_free (old);
+  return was;
+}
+
+void
+v3d_bo_refused (struct v3d_dev *v3d, int why, uint64_t bytes)
+{
+  uint32_t *c = why == V3D_REFUSED_HANDLES ? &v3d->stats.refused_handles
+    : why == V3D_REFUSED_TABLE ? &v3d->stats.refused_table
+    : why == V3D_REFUSED_SPACE ? &v3d->stats.refused_space : &v3d->stats.refused_memory;
+  if (!*c)				/* the first of each kind, in the log */
+    plat_log (v3d, why == V3D_REFUSED_HANDLES ? "Buffer refused: no handle free (bytes)"
+	      : why == V3D_REFUSED_TABLE ? "Buffer refused: BO table full (bytes)"
+	      : why == V3D_REFUSED_SPACE ? "Buffer refused: no room in the buffer area (bytes)"
+	      : "Buffer refused: RISC OS gave no memory (bytes)", (uint32_t) bytes);
+  (*c)++;
+  v3d->stats.bo_refused++;
+  v3d->stats.refused_last_bytes = (uint32_t) bytes;
+}
+
 int
 v3d_bo_create (struct v3d_dev *v3d, uint32_t bytes, int *bo_out)
 {
@@ -360,12 +440,16 @@ v3d_bo_create_cached (struct v3d_dev *v3d, uint32_t bytes, int cached, int *bo_o
     return -V3D_EINVAL;
   uint32_t n = (bytes + V3D_PAGE - 1) / V3D_PAGE, first;
   if (n >= v3d->area_pages)
-    return -V3D_ENOMEM;
-  int bo;
-  for (bo = 1; bo < V3D_MAX_BOS && v3d->bos[bo].used; bo++)
-    ;
-  if (bo == V3D_MAX_BOS)
-    return -V3D_ENOMEM;
+    {
+      v3d_bo_refused (v3d, V3D_REFUSED_SPACE, bytes);
+      return -V3D_ENOMEM;
+    }
+  int bo = v3d_bo_slot (v3d);
+  if (!bo)
+    {
+      v3d_bo_refused (v3d, V3D_REFUSED_TABLE, bytes);
+      return -V3D_ENOMEM;
+    }
   uint64_t t0 = plat_time_ns ();
   uint32_t at = v3d->place_at, align = n >= 256 ? 256 : n >= 16 ? 16 : 1;
   v3d->place_at = 0;
@@ -376,17 +460,24 @@ v3d_bo_create_cached (struct v3d_dev *v3d, uint32_t bytes, int cached, int *bo_o
 	     && ((align > 1 && find_pooled (v3d, n, align, cached, &first))
 		 || find_pooled (v3d, n, 1, cached, &first)))
 	   && !find_place (v3d, n, &first, 1))
-    return -V3D_ENOMEM;
+    {
+      v3d_bo_refused (v3d, V3D_REFUSED_SPACE, bytes);
+      return -V3D_ENOMEM;
+    }
   uint32_t claimed = v3d->stats.pages_claimed;
   if (back_pages (v3d, first, n, cached))
     {
       if (v3d->no_page_ops)
-	return -V3D_ENOMEM;
+	{
+	  v3d_bo_refused (v3d, V3D_REFUSED_MEMORY, bytes);
+	  return -V3D_ENOMEM;
+	}
       /* short of memory: the pool goes back to RISC OS, and once more */
       v3d_pool_trim (v3d, 0);
       if (back_pages (v3d, first, n, cached))
 	{
 	  v3d_pool_trim (v3d, 0);
+	  v3d_bo_refused (v3d, V3D_REFUSED_MEMORY, bytes);
 	  return -V3D_ENOMEM;
 	}
     }
@@ -441,10 +532,8 @@ v3d_bo_import (struct v3d_dev *v3d, uintptr_t cpu, uint32_t bytes, int *bo_out)
 	plat_free (pa);
 	return -V3D_EFAULT;
       }
-  int bo;
-  for (bo = 1; bo < V3D_MAX_BOS && v3d->bos[bo].used; bo++)
-    ;
-  if (bo == V3D_MAX_BOS || !find_place (v3d, n, &first, 0))
+  int bo = v3d_bo_slot (v3d);
+  if (!bo || !find_place (v3d, n, &first, 0))
     {
       plat_free (pa);
       return -V3D_ENOMEM;
@@ -484,10 +573,8 @@ v3d_bo_import_phys (struct v3d_dev *v3d, uint64_t pa, uint32_t bytes, int *bo_ou
     return -V3D_ENOMEM;
   for (uint32_t i = 0; i < n; i++)
     pas[i] = pa + (uint64_t) i * V3D_PAGE;
-  int bo;
-  for (bo = 1; bo < V3D_MAX_BOS && v3d->bos[bo].used; bo++)
-    ;
-  if (bo == V3D_MAX_BOS || !find_place (v3d, n, &first, 1))
+  int bo = v3d_bo_slot (v3d);
+  if (!bo || !find_place (v3d, n, &first, 1))
     {
       plat_free (pas);
       return -V3D_ENOMEM;
@@ -521,7 +608,7 @@ int
 v3d_bo_at (struct v3d_dev *v3d, uint32_t gpu)
 {
   uint32_t page = gpu >> V3D_MMU_PAGE_SHIFT;
-  for (int bo = 1; bo < V3D_MAX_BOS; bo++)
+  for (int bo = 1; bo < (int) v3d->nbos; bo++)
     {
       struct v3d_bo *b = &v3d->bos[bo];
       if (b->used && page >= b->first && page < b->first + b->npages)
@@ -567,7 +654,7 @@ v3d_file_caches (struct v3d_dev *v3d, int f)
     return;
   uint32_t left = 0;
   uint64_t t0 = plat_time_ns ();
-  for (int h = 1; h < V3D_MAX_HANDLES; h++)
+  for (uint32_t h = 1; h < file->nhandles; h++)
     {
       int bo = file->handles[h];
       if (!bo || !v3d->bos[bo].stale)
@@ -623,6 +710,12 @@ v3d_bo_put (struct v3d_dev *v3d, int bo)
 int
 v3d_bo_init (struct v3d_dev *v3d)
 {
+  v3d->bos = plat_alloc (V3D_FIRST_BOS * sizeof *v3d->bos);
+  if (!v3d->bos)
+    return -V3D_ENOMEM;
+  memset (v3d->bos, 0, V3D_FIRST_BOS * sizeof *v3d->bos);
+  v3d->nbos = V3D_FIRST_BOS;
+  v3d->bo_hint = 1;
   uint32_t words = (v3d->area_pages + 31) / 32 * 4;
   v3d->page_map = plat_alloc (words);
   v3d->page_backed = plat_alloc (words);
@@ -645,13 +738,16 @@ v3d_bo_init (struct v3d_dev *v3d)
 void
 v3d_bo_fini (struct v3d_dev *v3d)
 {
-  for (int bo = 1; bo < V3D_MAX_BOS; bo++)
+  for (int bo = 1; bo < (int) v3d->nbos; bo++)
     if (v3d->bos[bo].used)
       {
 	v3d->bos[bo].refs = 1;
 	v3d_bo_put (v3d, bo);
       }
   v3d_pool_trim (v3d, 0);
+  plat_free (v3d->bos);
+  v3d->bos = 0;
+  v3d->nbos = 0;
   plat_free (v3d->page_map);
   plat_free (v3d->page_backed);
   plat_free (v3d->page_backed_cached);
@@ -683,7 +779,7 @@ int
 v3d_pages_unsafe (struct v3d_dev *v3d, const uint64_t *pa, uint32_t n)
 {
   int hit = 0;
-  for (int bo = 1; bo < V3D_MAX_BOS && !hit; bo++)
+  for (int bo = 1; bo < (int) v3d->nbos && !hit; bo++)
     if (v3d->bos[bo].used && v3d->bos[bo].imported && v3d->bos[bo].pa)
       hit = bo_uses (&v3d->bos[bo], pa, n);
   if (!hit)
@@ -721,7 +817,7 @@ v3d_pages_unsafe (struct v3d_dev *v3d, const uint64_t *pa, uint32_t n)
 void
 v3d_pages_safe (struct v3d_dev *v3d, const uint64_t *old, const uint64_t *new_, uint32_t n)
 {
-  for (int bo = 1; bo < V3D_MAX_BOS; bo++)
+  for (int bo = 1; bo < (int) v3d->nbos; bo++)
     {
       struct v3d_bo *b = &v3d->bos[bo];
       if (!b->used || !b->imported || !b->pa)

@@ -402,7 +402,9 @@ pmp_create (struct pmp *a, const char *name, uint32_t pages)
     return e;
   a->area = r.r[1];
   a->base = (uint8_t *) r.r[3];
-  a->pages = pages;
+  /* (0.30) R5 is the size it really got: RISC OS clamps the maximum
+     (OS_DynamicArea 8), and 0.09-0.29 assumed the size asked for */
+  a->pages = r.r[5] / 4096 < pages ? r.r[5] / 4096 : pages;
   return 0;
 }
 
@@ -684,9 +686,20 @@ oserror *
 pi4_memory (struct v3d_dev *v3d)
 {
   oserror *e = 0;
+  /* (0.30) RISC OS 5.30 clamps areas with a given maximum to 128 MB
+     unless something (DAClamp, !MesaLibs' !Boot) has lifted it. Lift it
+     just for this area, and put back what it was */
+  regs c = {{ 8, 0, 0xFFFFFFFF, 0 }};
+  int lifted = !swix_regs (OS_DynamicArea, &c);
   for (uint32_t mb = pi4_area_mb; mb >= 16; mb /= 2)
     if (!(e = pmp_create (&pi4.bo, "V3DRender buffers", mb * 256)))
       break;
+  if (lifted)
+    {
+      regs back = {{ 8, 0, c.r[2], 0 }};
+      swix_regs (OS_DynamicArea, &back);
+    }
+  pi4_area_clamp = lifted ? c.r[2] : 0;
   if (e)
     return e;
   e = pmp_create (&pi4.pt, "V3DRender page table", 1025);
@@ -783,6 +796,7 @@ plat_irq_restore (unsigned cpsr)
    interrupts on. */
 int pi4_no_wfi;
 uint32_t pi4_area_mb = 256;
+uint32_t pi4_area_clamp;		/* (0.30) the clamp RISC OS had (put back) */
 
 /* where the page table is (for *V3DRender) */
 uint64_t

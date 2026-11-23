@@ -41,7 +41,7 @@
 #include "plat_pi4.h"
 #include "twod.h"
 
-#define VERSION 29		/* 0.29 */
+#define VERSION 30		/* 0.30 */
 #define SWI_BASE 0x5AFC0
 #ifndef OS_SetVarVal
 #define OS_SetVarVal		0x24
@@ -183,7 +183,7 @@ static void
 count_pages (uint32_t *high, uint32_t *low, uint32_t *big, uint32_t *super)
 {
   *high = *low = *big = *super = 0;
-  for (int bo = 1; bo < V3D_MAX_BOS; bo++)
+  for (int bo = 1; bo < (int) dev->nbos; bo++)
     {
       struct v3d_bo *b = &dev->bos[bo];
       if (!b->used || b->imported)
@@ -1381,7 +1381,44 @@ mod_command (int index, const char *tail, int argc)
       write0 (")");
       newline ();
     }
-  line ("Buffer memory (KB):    ", dev->area_pages * 4);
+  write0 ("Buffer memory (KB):    ");
+  write_dec (dev->area_pages * 4);
+  if (dev->area_pages < pi4_area_mb * 256)	/* (0.30) */
+    {
+      write0 (" (asked for ");
+      write_dec (pi4_area_mb * 1024);
+      write0 (": RISC OS gave less)");
+    }
+  newline ();
+  /* (0.30) the BO table, and buffers refused */
+  write0 ("  buffers (BOs):       ");
+  {
+    uint32_t used = 0;
+    for (uint32_t b = 1; b < dev->nbos; b++)
+      used += dev->bos[b].used;
+    write_dec (used);
+    write0 (" of ");
+    write_dec (dev->nbos - 1);
+    write0 (" (grows to 65535)");
+  }
+  newline ();
+  if (dev->stats.bo_refused)
+    {
+      write0 ("  refused:             ");
+      write_dec (dev->stats.bo_refused);
+      write0 (" (no handle ");
+      write_dec (dev->stats.refused_handles);
+      write0 (", BO table full ");
+      write_dec (dev->stats.refused_table);
+      write0 (", no room in the area ");
+      write_dec (dev->stats.refused_space);
+      write0 (", no memory from RISC OS ");
+      write_dec (dev->stats.refused_memory);
+      write0 ("); the last was ");
+      write_dec (dev->stats.refused_last_bytes);
+      write0 (" bytes");
+      newline ();
+    }
   line ("  in use (KB):         ", dev->pages_used * 4);
   /* (0.25) freed BOs' pages kept for the next */
   write0 ("  kept for reuse (KB): ");
