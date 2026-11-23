@@ -181,6 +181,18 @@ Load options (0.09), in any order:
   before V3DRender loads.
 - `NoWFI`: waits spin instead of sleeping the CPU until the next
   interrupt.
+- For finding a start-up problem (0.27):
+  - `Log <file>`, or the system variable `V3DRender$Log`: each start-up
+    step is added to the file as it begins. The file is opened, written
+    and closed each time, so after a crash the last line shows how far
+    start-up got. Every start-up adds to it, with the options and the
+    RAM; a failure adds its error, and the first GPU interrupt is noted.
+  - `NoIRQ`: the GPU's interrupt isn't claimed. Waits poll the GPU
+    instead, so programs still work, only less efficiently.
+  - `NoRISC3D`: V3DRender doesn't register with RISC3D.
+  - `LowMem`: no memory is asked for above 1 GB.
+  - Options are whole words since 0.27; before that, any word starting
+    "no" was taken as `NoWFI`.
 - `2D` or `2DAsync` (0.17): the desktop's copies and fills on the GPU,
   waited for or not (above). Without it, `V3DRender$2D` (`on`, `async`).
 

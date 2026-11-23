@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.27: a start-up log that survives a crash; diagnostic load options (23 November 2026)
+
+From RISC3D: Chris Hughes's CM4 (R-Comp Ne.X.T) still gives "Internal error, trap while in trap handler: abort on instruction fetch at &00000000" at start-up with V3DRender 0.24. The earlier test build gave the same. RISC3D asked for a log that survives the crash and an option to skip the interrupt.
+
+- **`Log <file>`, or `V3DRender$Log`:**
+  - Each start-up step goes into the file as it begins: 1 checks, 2 map, 3 power, 4 probe, 5 memory, 6 init, 7 interrupt, 8 RISC3D, ready.
+  - The file is opened, written and closed for each line, so it is complete up to the moment of a crash, and can be read after restarting without !RISC3D.
+  - Each line has the monotonic time and the version. The file is created as Text and added to at every start-up.
+  - It also records the load options and the RAM (OS_Memory 8), HAL_IRQClear's address and static base, and a failure's error number and text, before the clean-up. It records the first GPU interrupt, from a callback, since files can't be touched in the handler, and "final" when the module is killed.
+- **`NoIRQ`:** the device vector isn't claimed and HAL_IRQEnable isn't called. Waits, and every V3DRender_Ioctl, poll the GPU's interrupt status instead, so programs still work. This separates an interrupt problem from a power or memory one.
+- **`NoRISC3D`:** V3DRender doesn't register with RISC3D.
+- **`LowMem`:** no OS_Memory 12 requests for pages above 1 GB; buffers and the page table come from anywhere.
+- **Options are whole words.** 0.09-0.26 took any word starting "no" as NoWFI.
+- **Tests:** emulator 77366:
+  - every step, the options and RAM, and HAL_IRQClear in a Text file, appended;
+  - the first interrupt noted once, and "final";
+  - `V3DRender$Log`; a start-up failing at step 5 logs its error before the clean-up's "final (fatal)";
+  - no file unless asked for;
+  - NoIRQ: no vector, and a job that finishes with no interrupt is seen by polling;
+  - NoRISC3D: RISC3D not called;
+  - LowMem: no range request above 1 GB.
+  - Host 2129 (unchanged).
+- **Kit 30:** as kit 29, needing 0.27.
+
 ## 0.26: no memory calls inside GraphicsV; GFXH-1897 (22 November 2026)
 
 From Rob Heaton's V3DDriver development log, read against V3DRender.

@@ -20,7 +20,10 @@ void pi4_memory_free (void);
 oserror *pi4_clock (uint32_t *hz, uint32_t *max_hz);
 oserror *pi4_set_clock (uint32_t hz, uint32_t *now);
 void pmp_handler (void);		/* the veneer (header.s) */
+struct v3d_dev;
 extern int pi4_no_wfi;
+extern int pi4_low_mem;		/* (0.27) LowMem */
+extern struct v3d_dev *pi4_poll;	/* (0.27) NoIRQ: waits poll this device */
 extern uint32_t pi4_area_mb;	/* the BO area asked for (0.09) */
 uint64_t pi4_pt_pa (void);
 oserror *pi4_arm_clock (uint32_t *hz, uint32_t *max_hz);
