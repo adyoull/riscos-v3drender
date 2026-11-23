@@ -41,7 +41,7 @@
 #include "plat_pi4.h"
 #include "twod.h"
 
-#define VERSION 27		/* 0.27 */
+#define VERSION 28		/* 0.28 */
 #define SWI_BASE 0x5AFC0
 #ifndef OS_SetVarVal
 #define OS_SetVarVal		0x24
@@ -121,6 +121,8 @@ ERROR_BLOCK (err_nogpu, 0x823E03, "The GPU didn't answer as a V3D 4.2");
 ERROR_BLOCK (err_files, 0x823E04, "Too many V3DRender files are open");
 ERROR_BLOCK (err_mem, 0x823E05, "Not enough memory for V3DRender");
 ERROR_BLOCK (err_syntax, 0x823E0B, "Syntax: *V3DRender [2D on|async|off]");
+ERROR_BLOCK (err_2d, 0x823E0C, "V3DRender couldn't start the desktop's 2D on the GPU");
+ERROR_BLOCK (err_2dmode, 0x823E0D, "RISC3D asked for a desktop 2D state V3DRender doesn't know");
 ERROR_BLOCK (err_sync, 0x823E06, "V3DRender takes its work through V3DRender_Ioctl, not RISC3D_Sync");
 
 static unsigned
@@ -305,7 +307,7 @@ register_risc3d (void)
   risc3d_register = n.r[0];
   /* flags: bit 0 a DRM device; (0.20) bit 3 answers reason 4, hardware */
   regs r = {{ 0, (unsigned) driver_entry, 0, (unsigned) "V3DRender (the Pi 4's GPU)",
-	      1 | 8, SWI_BASE + 3, (unsigned) "v3d" }};
+	      1 | 8 | 16, SWI_BASE + 3, (unsigned) "v3d" }};
   registered = !swix_regs (risc3d_register, &r);
 }
 
@@ -394,7 +396,25 @@ recover (int all, int report)
    2 sync: not for this kind of driver; 3 describe (RISC3D 0.03, asked
    only of drivers registered with flags bit 1): r0 = 0, on a GPU;
    4 hardware (0.20; RISC3D 0.09, flags bit 3): r1 -> buffer, r2 = size
-   -> r2 = size needed, the text ended with a 0 */
+   -> r2 = size needed, the text ended with a 0;
+   5 desktop 2D (0.28; RISC3D 0.10, flags bit 4): r1 = -1 read, 0 off,
+   1 on, 2 not waited for -> r0 = the state now (as *V3DRender 2D) */
+/* (0.28) The desktop's 2D on the GPU off, on or not waited for: one
+   path for *V3DRender 2D off|on|async and RISC3D's reason 5, so they
+   always agree. An error if it was asked for and didn't start. */
+static oserror *
+desktop_2d (int mode)
+{
+  if (mode == twod.mode && mode != TWOD_OFF)
+    return 0;				/* (off again releases GraphicsV after a stop) */
+  if (mode != TWOD_OFF && twod.mode != TWOD_OFF)
+    twod_set (TWOD_OFF);		/* (from on to async, or back) */
+  oserror *e = twod_set (mode);
+  if (!e && twod.mode != mode)
+    e = ERR (err_2d);
+  return e;
+}
+
 oserror *
 driver_call (regs *r)
 {
@@ -424,6 +444,15 @@ driver_call (regs *r)
 	hardware_text ((char *) r->r[1], r->r[2], &need);
 	r->r[2] = need;
 	return 0;
+      }
+    case 5:				/* (0.28) desktop 2D (RISC3D 0.10, flags bit 4) */
+      {
+	int want = (int) r->r[1];
+	if (want < -1 || want > TWOD_ASYNC)
+	  return ERR (err_2dmode);
+	oserror *e = want < 0 ? 0 : desktop_2d (want);
+	r->r[0] = (unsigned) twod.mode;
+	return e;
       }
     }
   return ERR (err_sync);
@@ -1189,9 +1218,7 @@ mod_command (int index, const char *tail, int argc)
 	: (tail[0] | 32) == 'o' && (tail[1] | 32) == 'f' ? TWOD_OFF : -1;
       if (mode < 0)
 	return ERR (err_syntax);
-      if (mode != TWOD_OFF && twod.mode != TWOD_OFF)
-	twod_set (TWOD_OFF);		/* (from on to async, or back) */
-      return twod_set (mode);
+      return desktop_2d (mode);		/* (0.28) as RISC3D's reason 5 */
     }
   if (index == 2)
     {

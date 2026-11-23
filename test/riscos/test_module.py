@@ -496,13 +496,13 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 27 and out[8] != 0, "version 0.27, statistics in r8")
+    check(out[0] == 28 and out[8] != 0, "version 0.28, statistics in r8")
     check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
     # RISC3D: registered as a DRM device; its calls open, describe, close
     d = m.risc3d
-    check(d is not None and d["flags"] == 9 and d["ioctl"] == 0x5AFC3 and d["drm"] == "v3d"
+    check(d is not None and d["flags"] == 25 and d["ioctl"] == 0x5AFC3 and d["drm"] == "v3d"
           and "RISC3D_Register" in m.swi_lookups,
           "registered with RISC3D as a DRM device (%s)" % d)
     if d:
@@ -531,6 +531,27 @@ def main():
         cut = bytes(m.uc.mem_read(B, 21))
         check(not v and o[2] == need and cut[19] == 0 and cut[20] == 0xAA and cut[:19] == txt[:19],
               "reason 4 into 20 bytes: 19 and a 0, nothing past it")
+        # (0.28) reason 5: desktop 2D, the same as *V3DRender 2D
+        o, v, _ = m.call(d["entry"], {0: 5, 1: 0xFFFFFFFF, 12: d["r12"]})
+        check(not v and o[0] == 0, "(0.28) reason 5 reads: off")
+        o, v, _ = m.call(d["entry"], {0: 5, 1: 1, 12: d["r12"]})
+        claimed = getattr(m, "gfxv", None) is not None
+        o2, v2, _ = m.call(d["entry"], {0: 5, 1: 0xFFFFFFFF, 12: d["r12"]})
+        m.output = ""
+        mod.command("V3DRender")
+        check(not v and o[0] == 1 and not v2 and o2[0] == 1
+              and "Desktop copies (2D):   on" in m.output and "not waited" not in m.output.split("Desktop copies")[1].split("\n")[0],
+              "(0.28) reason 5 on: GraphicsV claimed, *V3DRender agrees")
+        o, v, _ = m.call(d["entry"], {0: 5, 1: 2, 12: d["r12"]})
+        m.output = ""
+        mod.command("V3DRender")
+        check(not v and o[0] == 2 and "not waited for" in m.output, "(0.28) reason 5 async")
+        err = mod.command("V3DRender", "2D off", 3)
+        o, v, _ = m.call(d["entry"], {0: 5, 1: 0xFFFFFFFF, 12: d["r12"]})
+        check(err is None and not v and o[0] == 0, "(0.28) *V3DRender 2D off: reason 5 reads off")
+        o, v, _ = m.call(d["entry"], {0: 5, 1: 7, 12: d["r12"]})
+        o2, v2, _ = m.call(d["entry"], {0: 5, 1: 0xFFFFFFFF, 12: d["r12"]})
+        check(v and not v2 and o2[0] == 0, "(0.28) reason 5 with an unknown state: an error, nothing changed")
         o, v, _ = m.call(d["entry"], {0: 2, 1: rf, 12: d["r12"]})
         check(v, "RISC3D sync refused (no command stream)")
         o, v, _ = m.call(d["entry"], {0: 1, 1: rf, 12: d["r12"]})
@@ -1281,7 +1302,7 @@ def test_027_log_and_options(data):
     check(any(l.startswith("options: NoWFI Size 256 MB; 2048 MB of RAM") for l in lines),
           "(0.27) the options and RAM in the log")
     check(any(l.startswith("HAL_IRQClear at &") for l in lines), "(0.27) HAL_IRQClear's address")
-    check(m.ftypes.get("$.V3DLog") == 0xFFF and log.splitlines()[0].split(" cs  ")[1].startswith("V3DRender 0.27: "),
+    check(m.ftypes.get("$.V3DLog") == 0xFFF and log.splitlines()[0].split(" cs  ")[1].startswith("V3DRender 0.28: "),
           "(0.27) a text file, each line timed and versioned")
     # the first interrupt, noted from a callback
     m.finish(R["INT_FRDONE"])

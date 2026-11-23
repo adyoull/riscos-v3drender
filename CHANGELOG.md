@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.28: desktop 2D switched from Configure's RISC3D window (23 November 2026)
+
+From RISC3D, at the owner's request: turn the desktop's 2D on and off in Configure's RISC3D window rather than with a command (RISC3D 0.10, !RISC3DSetup 1.07, DRIVER-GUIDE "Desktop 2D").
+
+- **Registers with flags bit 4** (`1 | 8 | 16`): "can do the desktop's 2D on the GPU and switch it while running". RISC3D 0.09 and older ignore the bit.
+- **Driver reason 5, desktop 2D:**
+  - In: r1 = -1 to read, 0 off, 1 on, 2 on without waiting.
+  - Out: r0 = the state now (0, 1 or 2).
+  - On failure, V set with an error: &823E0C if 2D was asked for and didn't start; &823E0D for a state it doesn't know, which changes nothing.
+  - RISC3D calls it from RISC3D_Desktop2D in the window's task, and from a transient callback after V3DRender registers, with the saved `RISC3D$2D`.
+- **One path:** `*V3DRender 2D off|on|async` and reason 5 now share `desktop_2d`, so `*V3DRender` and the window always agree.
+  - `*V3DRender 2D on` (or `async`) now gives an error if 2D couldn't be started. Before, it silently stayed off.
+  - Asking for the state already in force does nothing, except that `off` always releases GraphicsV, as after a GPU failure.
+- `V3DRender$2D` and the `2D`/`2DAsync` load options are unchanged. A saved `RISC3D$2D` arrives later, so it wins.
+- **Tests:** emulator 77472: registration flags 25; reason 5 reads off; on and async are claimed and agree with `*V3DRender`; `*V3DRender 2D off` is read back as off by reason 5; an unknown state gives an error and changes nothing; off after a GPU stop releases GraphicsV. Host 2129 (unchanged).
+- **Kit 31:** as kit 30, needing 0.28.
+
 ## 0.27: a start-up log that survives a crash; diagnostic load options (23 November 2026)
 
 From RISC3D: Chris Hughes's CM4 (R-Comp Ne.X.T) still gives "Internal error, trap while in trap handler: abort on instruction fetch at &00000000" at start-up with V3DRender 0.24. The earlier test build gave the same. RISC3D asked for a log that survives the crash and an option to skip the interrupt.
