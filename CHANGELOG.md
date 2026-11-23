@@ -1,5 +1,142 @@
 # Changelog
 
+## 0.33: the start-up log and diagnostic options at boot (23 November 2026)
+
+Chris Hughes's CM4 Ne.X.T: V3DRender works when turned on from Configure's RISC3D window, and turns off cleanly, but the machine still stops ("trap while in trap handler") when V3DRender loads at boot. No log from it yet.
+
+- **`V3DRender$Options`:** read when V3DRender is loaded with no options, as RISC3D's !Boot loads it. So NoIRQ, NoRISC3D, LowMem, NoWFI, Size and Log can be given at boot. Options in the command tail still win.
+- **The log goes on past "ready":** after start-up, each of these is logged the first time it happens:
+  - registering with RISC3D, and its answer;
+  - RISC3D loaded again;
+  - RISC3D's first call for each reason;
+  - the first program opening the GPU;
+  - the first mode change (starting and done);
+  - the first Service_WimpCloseDown;
+  - the first GPU interrupt (as in 0.27).
+
+  Nothing is written from page-moving service calls. A machine that stops later in its boot now shows how far it got.
+- **Tests:** emulator 101832 (the variable used only with no command tail; the later events logged once each). Host 5271.
+- **Kit 36:** as kit 35, needing 0.33.
+
+## 0.32: PRESENT's red and blue in 64K-colour modes (23 November 2026)
+
+From MESA's first Pi test of 0.31 (riscos-mesa `tests/presenttest.c`, owner's Pi 4):
+- **What worked:** 16M colours and 32K colours were right. The menu stayed on top. The rate was 565 frames a second against 66 with the CPU plot. 16,225 presents, no MMU errors, timeouts or resets.
+- **What didn't:** in `C64K` (5:6:5, ModeFlags bit 7, bit 14 clear) red and blue were swapped. Blue came out as &001F, where it should be &F800.
+
+- **Cause:** the GPU doesn't swap R and B for a 3-channel format.
+  - 0.31 asked for the swap on the store to the 5:6:5 screen (BGR565), and the hardware ignored it.
+  - Mesa's v3dv says the same ("we can't swap R/B on 3-channel images", commit 7f3e79ef9f1).
+  - The format itself was right: BGR565 has red at the top, as Vulkan's R5G6B5_PACK16.
+- **Fix:** the source's swap and the screen's are combined and done on a load in RGBA8 (4 channels), never on a store.
+  - An RGB565 source that needs a swap is first copied whole into the staging buffer as RGBA8, as a UIF source is.
+  - No store asks for a swap any more, for any screen.
+- **Tests:**
+  - The host model now ignores R/B swap on format 7, as the hardware does.
+  - The 5:6:5 TBGR case is checked with an ABGR source, and with MESA's exact pixel (blue gives &F800). 0.31's code fails these.
+  - cl2d's 1:5:5:5 TRGB list now expects no swap on the load or the store, as the two cancel.
+  - Host 5271; emulator 92557.
+- **Kit 35:** as kit 34, needing 0.32.
+
+## 0.31: DRM_IOCTL_RISCOS_PRESENT, EGL's swap on the GPU (23 November 2026)
+
+Asked for by MESA (EGL's window swap) and agreed by RISC3D: the GPU copies a program's finished frame to the screen, instead of EGL plotting a sprite with the CPU.
+
+- **The ioctl:** `DRM_IOCTL_RISCOS_PRESENT`, `'R'` nr 4, `_IOC_WRITE`, 48 bytes. The struct is MESA's suggestion, with the padding before `rects` made explicit (`pad`, must be 0), and a third flag, `SRC_UIF_XOR`. In `include/drm/drm.h`; described in docs/INTERFACE.md.
+- **Rectangles:**
+  - Up to 256 a call, in screen pixels from the top left, each with its source pixel.
+  - Each is clipped to the screen and to the source.
+  - Each becomes one render job of 64x64 tiles: each tile is loaded from the source and stored to the screen, with no shaders and no binning, as the desktop's copies are. A frame too big for one list is split into bands of tile rows, each a job with the whole frame's header.
+- **Formats:**
+  - Sources: ABGR/XBGR8888 and ARGB/XRGB8888, raster or UIF (Mesa's tiled layout, plain or XOR); RGB565.
+  - Screens: 32bpp TBGR/TRGB (alpha or not); 16bpp 5:6:5 (ModeFlags bit 7) and 1:5:5:5, each TBGR/TRGB.
+  - The conversion is done by the load's and the store's own formats and R/B swaps. Alpha is forced to 1.
+  - Other screens: -EINVAL.
+- **UIF sources** can only be loaded from their start. So a UIF frame is first untiled whole into a raster staging buffer (kept, grown in MB), and the rectangles are copied from there.
+- **The screen is read each call:**
+  - the mode from the VDU variables;
+  - the framestore from GraphicsV 9;
+  - where the VDU writes from VDU variable 148, turned into a physical address with OS_Memory 65, so the bank OS_Byte 112 chose is followed.
+  - A screen the CPU caches gives -EBUSY.
+- **Ordering:**
+  - The jobs go on the calling program's render queue, after its earlier jobs on the source (implicit) and after `in_sync`. `out_sync` is signalled when the last one finishes.
+  - All rectangles clipped away: `out_sync` is signalled at once.
+- **Other answers:**
+  - `rect_count` 0 checks the screen (and the source, given a handle) without drawing.
+  - `VSYNC`: -EOPNOTSUPP. It couldn't be done without waiting; EGL uses OS_Byte 19 itself.
+  - -ENOTTY where it isn't offered.
+- **Independent of desktop 2D:**
+  - PRESENT has its own internal file: its lists (256 KB in four parts, each part reused once its last job has finished), its own mapping of the framestore (remapped when the framestore moves) and the staging buffer.
+  - It's closed with the last program.
+  - Internal files are no longer counted as programs anywhere: open files, `*V3DPower`, 2D's "program open" rule, and the pool.
+- **The core:** `v3d_submit_render` (a render job from the core, with BOs by index) and `v3d_present_rcl` (v3d_2d.c, the per-tile list with separate load and store words).
+- **`*V3DRender`** shows a "Presents:" line: rectangles, jobs, UIF frames untiled, checks, rectangles off the screen, and refusals with the last error.
+- **Tests:**
+  - Host 5268. The lists are carried out as the GPU would (formats, raster and UIF layouts, swaps, alpha) into a stand-in screen, and compared with one drawn pixel by pixel. Covered:
+    - partial, off-screen and over-the-edge rectangles;
+    - a second bank;
+    - ARGB onto TRGB, XBGR onto TRGB, RGB565 onto 5:6:5 both orders, and onto 1:5:5:5 both orders;
+    - a 100x70 UIF frame;
+    - the errors, `out_sync` and `in_sync` ordering, the parts of the list buffer, a framestore move, and the file closed with the last program.
+  - cl2d.py checks a 1:5:5:5 present list and a UIF untiling list against Mesa's packet XML (formats 45 and 27, memory format 4, height 9 UIF blocks, R/B swap, alpha 1).
+  - Emulator 92557, through the module: the screen read from the VDU variables, GraphicsV 9 and OS_Memory 65, with the jobs started. Covered:
+    - 32bpp, 5:6:5 and 1:5:5:5 TRGB;
+    - 4K colours and 8bpp refused;
+    - VSYNC, a cached screen, the VDU outside the framestore and a bad handle;
+    - the status line;
+    - no file left open.
+- **Not checked on the Pi yet.** 16bpp UIF follows the same rule as 32bpp but has no model in the tests.
+- **Kit 34:** as kit 33, needing 0.31.
+
+## 0.30: the 128 MB area clamp; BO and handle tables that grow; refused buffers counted (23 November 2026)
+
+From RISC3D, passing on David Sharp's ports (ioquake3, Mupen64Plus, dhewm3) on a Pi 4 with RISC OS 5.30 and V3DRender 0.26. Both claims checked against the code first.
+
+- **The buffer area's real size.**
+  - *Claim:* on RISC OS 5.30, unless DAClamp has run first, the area stops at 128 MB, and BOs past it fail with "claim any failed: OS error &1D1"; `*V3DRender` still shows 262,144 KB.
+  - *Confirmed:* `pmp_create` took the size it asked for as the size it got. OS_DynamicArea 0 returns the clamped maximum in R5, which was ignored, so `area_pages` covered address space the area didn't have.
+  - *Fixed:*
+    - The area's size is now R5.
+    - The clamp for areas with a given maximum (OS_DynamicArea 8, R2) is lifted just while V3DRender makes its area, then put back to what it was. Nothing else in the system changes.
+    - If it can't be lifted (an older OS), V3DRender uses what it got.
+    - `*V3DRender`'s "Buffer memory" says when RISC OS gave less than was asked for. V3DRender_Info r4 is the real size.
+- **4,096 handles a file and 8,192 BOs.**
+  - *Claim:* Doom 3 makes about 5,300 BOs; CREATE_BO returns -ENOSPC past 4,096 handles, and the game crashes.
+  - *Confirmed:* fixed tables, `V3D_MAX_HANDLES` 4096, `V3D_MAX_BOS` 8192.
+  - *Fixed:* both are now tables that start at 1,024 and double as needed, up to 65,535 (indices are 16 bits).
+    - Growing is done in SVC: a new table, the old copied in, then the pointer swapped with interrupts off (the interrupt handler reads BOs) and the old freed.
+    - A free-slot hint keeps finding a BO cheap with thousands in use.
+- **Refused CREATE_BOs are counted and logged.**
+  - Each is counted by reason: no handle, BO table full, no room in the area, or no memory from RISC OS. The first of each kind goes in the log, and the size of the last refusal is kept.
+  - `*V3DRender` shows the BO table ("buffers (BOs): N of M (grows to 65535)") and a "refused" line when there are any.
+  - Statistics gain `bo_refused, refused_handles, refused_table, refused_space, refused_memory, refused_last_bytes` at the end.
+- **Tests:**
+  - Host 5142: 1,500 BOs in one file, so both tables grow from 1,024 to 2,048 with every BO and its contents still where they were; refusals counted for a BO too big for the area, for RISC OS giving no memory, and for a file with no handle left.
+  - Emulator 86752: RISC OS 5.30's 128 MB clamp emulated; the area gets its 256 MB and the clamp is put back; with a 64 MB clamp V3DRender can't lift, it uses 64 MB and says so in `*V3DRender` and Info r4.
+- **Kit 33:** as kit 32, needing 0.30.
+
+## 0.29: "Z-layer complex overlays" in Configure's RISC3D window (23 November 2026)
+
+The owner asked for overlays layered as on Linux, in a way that stays compatible with VideoOverlay. On the native Pi this was already in the OS: BCMVideo (`s/GVOverlay`) creates VideoOverlay's overlays as firmware (dispmanx) layers.
+- In a 32bpp alpha desktop mode they are Z-Order: at layer -192 and below, under the desktop (which the firmware puts at -127), seen through VideoOverlay's transparent hole. GraphicsV 28 orders several.
+- Otherwise they are Basic, at layer 1024 over everything.
+- BCMVideo offers alpha modes only with `framebuffer_ignore_alpha=0` in config.txt.
+- Tested on the owner's Pi 4 through TestAgent, with config.txt backed up first:
+  - before: Basic;
+  - with the line, after a restart, in `C16M LABGR`: colour bars in a window, covered properly by a menu and a Filer window, and the desktop drawn correctly.
+- The owner named it "Enable z-layer complex overlays".
+
+- **Reason 4's hardware text gains a line**, so Configure's RISC3D window shows the real state:
+  - `Z-layer complex overlays`, with one of:
+    - "on: video overlays behind the desktop, under its windows and menus" (the desktop mode has the alpha flag);
+    - "off: available in this mode's alpha form" (OS_CheckModeValid accepts the current mode with ModeFlags bit 15);
+    - "off: needs framebuffer_ignore_alpha=0 in config.txt and a restart";
+    - "off: needs a 16 million colour desktop".
+  - From OS_ReadModeVariable and OS_CheckModeValid; nothing is changed.
+- Turning it on and off is RISC3D's part (a handoff): the config.txt line and the alpha mode. V3DRender has no part in display overlays.
+- **Tests:** emulator 77477 (all four states; the alpha form asked of OS_CheckModeValid is the current mode with &8000 added). Host 2129 (unchanged).
+- **Kit 32:** as kit 31, needing 0.29.
+
 ## 0.28: desktop 2D switched from Configure's RISC3D window (23 November 2026)
 
 From RISC3D, at the owner's request: turn the desktop's 2D on and off in Configure's RISC3D window rather than with a command (RISC3D 0.10, !RISC3DSetup 1.07, DRIVER-GUIDE "Desktop 2D").

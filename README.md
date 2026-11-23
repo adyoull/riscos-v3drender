@@ -163,7 +163,10 @@ command-line program; a program still using the GPU must start again.
 For frames the CPU reads back (0.11): CREATE_BO's `DRM_RISCOS_BO_CPU_CACHED`
 flag maps a BO cacheable for the CPU, and `DRM_IOCTL_RISCOS_IMPORT_MEMORY`
 lets the GPU draw into the program's own memory (a sprite, the screen).
-V3DRender does the cache maintenance either way. See docs/INTERFACE.md. On its own, V3DRender
+V3DRender does the cache maintenance either way. For EGL's swap on the
+desktop (0.31), `DRM_IOCTL_RISCOS_PRESENT` has the GPU copy a finished
+frame to the screen, rectangle by rectangle, in the screen's own format.
+See docs/INTERFACE.md. On its own, V3DRender
 resets the GPU when a job makes no progress for half a second (as Linux),
 and since 0.10 also when one has run for 5 seconds, even if it still moves. `V3DRender_Debug` (&5AFC5) reads
 the GPU's page table (r0 = 0, r1 = GPU address) and the MMU's widths

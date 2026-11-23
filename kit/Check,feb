@@ -1,10 +1,10 @@
-| Check: loads V3DRender 0.28 from this folder (replacing an older one)
+| Check: loads V3DRender 0.33 from this folder (replacing an older one)
 | and then RISC3D 0.05 (if an older RISC3D or none is loaded), runs
 | V3DCheck (buffers, no GPU work), then V3DJob (the GPU's jobs). Both
 | write to Results here.
 Set V3DCheck$Dir <Obey$Dir>
-RMEnsure V3DRender 0.28 RMLoad <Obey$Dir>.V3DRender
-RMEnsure V3DRender 0.28 Error V3DRender 0.28 didn't load
+RMEnsure V3DRender 0.33 RMLoad <Obey$Dir>.V3DRender
+RMEnsure V3DRender 0.33 Error V3DRender 0.33 didn't load
 RMEnsure RISC3D 0.05 RMLoad <Obey$Dir>.RISC3D
 RMEnsure RISC3D 0.05 Error RISC3D 0.05 didn't load
 Run <Obey$Dir>.V3DCheck

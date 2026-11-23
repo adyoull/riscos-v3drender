@@ -15,6 +15,7 @@
 #include <string.h>
 #include "v3d.h"
 #include "v3d_regs.h"
+#include "../../kit/src/tiling.h"
 
 /* ---- the simulated machine ---- */
 
@@ -32,6 +33,9 @@ static uint32_t pt[1 << 20];
    write combiner flush started while one is counts as a clobber
    (GFXH-1897) */
 static int l2t_pending, l2t_clobbers;
+
+/* (0.31) render lists carried out as they start (PRESENT's test) */
+static void (*present_exec) (uint32_t start, uint32_t end);
 
 uint32_t
 v3d_rd (struct v3d_dev *v3d, int bank, uint32_t off)
@@ -62,7 +66,11 @@ v3d_wr (struct v3d_dev *v3d, int bank, uint32_t off, uint32_t val)
   else if (bank == V3D_BANK_CORE0 && off == V3D_CLE_CT0QEA)
     start (V3D_BIN);
   else if (bank == V3D_BANK_CORE0 && off == V3D_CLE_CT1QEA)
-    start (V3D_RENDER);
+    {
+      start (V3D_RENDER);
+      if (present_exec)
+	present_exec (regs[V3D_BANK_CORE0][V3D_CLE_CT1QBA / 4], val);
+    }
   else if (bank == V3D_BANK_HUB && off == (uint32_t) V3D_TFU_ICFG (ver))
     start (V3D_TFU);
   else if (bank == V3D_BANK_CORE0 && off == (uint32_t) V3D_CSD_QUEUED_CFG0 (ver))
@@ -1376,6 +1384,548 @@ test_026_no_page_ops (void)
   teardown ();
 }
 
+/* (0.30) BO and handle tables grow past their first 1024; refused
+   CREATE_BOs are counted by reason */
+static void
+test_030_tables (void)
+{
+  setup (42);
+  CHECK (v3d_hw_probe (dev) == 0 && v3d_init (dev) == 0);
+  CHECK (dev->nbos == V3D_FIRST_BOS);
+  int f = v3d_open (dev, 5);
+  CHECK (dev->files[f].nhandles == V3D_FIRST_HANDLES);
+  static uint32_t h[1500], off[1500];
+  int ok = 1;
+  for (int i = 0; i < 1500 && ok; i++)
+    {
+      h[i] = bo_new (f, 4096, &off[i]);
+      ok = h[i] != 0;
+      if (ok)
+	area[off[i]] = (uint8_t) i;
+    }
+  CHECK (ok && dev->nbos == 2 * V3D_FIRST_BOS && dev->files[f].nhandles == 2 * V3D_FIRST_HANDLES);
+  ok = 1;
+  for (int i = 0; i < 1500; i++)		/* every BO still where it was */
+    {
+      struct drm_v3d_get_bo_offset g = { .handle = h[i] };
+      ok &= ioctl_ (f, DRM_IOCTL_V3D_GET_BO_OFFSET, &g) == 0 && g.offset == off[i]
+	&& area[off[i]] == (uint8_t) i;
+    }
+  CHECK (ok);
+  CHECK (dev->stats.bo_refused == 0);
+  /* too big for the area */
+  struct drm_v3d_create_bo big = { .size = (uint32_t) dev->area_pages * 4096 };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_CREATE_BO, &big) == -V3D_ENOMEM);
+  CHECK (dev->stats.refused_space == 1 && dev->stats.refused_last_bytes == big.size);
+  /* RISC OS gives nothing */
+  claim_fails = 2;
+  struct drm_v3d_create_bo m = { .size = 64 * 4096 };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_CREATE_BO, &m) == -V3D_ENOMEM);
+  claim_fails = 0;
+  CHECK (dev->stats.refused_memory == 1 && dev->stats.bo_refused == 2);
+  /* no handle: a file whose table can't grow */
+  uint32_t keep = dev->files[f].nhandles;
+  for (uint32_t i = 1; i < keep; i++)
+    if (!dev->files[f].handles[i])
+      dev->files[f].handles[i] = 1;		/* (taken, for this test) */
+  dev->files[f].nhandles = V3D_MAX_HANDLES;	/* pretend it's at the limit */
+  uint16_t *real = dev->files[f].handles;
+  dev->files[f].handles = calloc (V3D_MAX_HANDLES, 2);
+  for (uint32_t i = 1; i < V3D_MAX_HANDLES; i++)
+    dev->files[f].handles[i] = 1;
+  struct drm_v3d_create_bo nh = { .size = 4096 };
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_CREATE_BO, &nh) == -V3D_ENOSPC);
+  CHECK (dev->stats.refused_handles == 1 && dev->stats.bo_refused == 3);
+  free (dev->files[f].handles);
+  dev->files[f].handles = real;
+  dev->files[f].nhandles = keep;
+  for (uint32_t i = 1; i < keep; i++)
+    {
+      int used = 0;
+      for (int j = 0; j < 1500; j++)
+	used |= h[j] == i;
+      if (!used)
+	dev->files[f].handles[i] = 0;
+    }
+  for (int i = 0; i < 1500; i++)
+    CHECK (gem_close (f, h[i]) == 0);
+  v3d_close (dev, f);
+  teardown ();
+}
+
+/* (0.31) DRM_IOCTL_RISCOS_PRESENT. The render lists are carried out as
+   the GPU would as each job starts (loads and stores with their formats,
+   memory layouts, R/B swaps and alpha), into a stand-in screen, and the
+   screen compared with one drawn here pixel by pixel from the source. */
+static uint8_t pscr[4 * 1024 * 1024], pwant[sizeof pscr];
+static uint32_t pscr_gpu, pscr_bytes, pjobs, pbad_list;
+static struct v3d_screen psc;
+static uint32_t pres[4];
+static const char *pdump;		/* the next list, to this file (cl2d.py checks it) */
+static int psc_ret;
+
+static int
+fake_screen (struct v3d_dev *v3d, struct v3d_screen *s)
+{
+  (void) v3d;
+  *s = psc;
+  return psc_ret;
+}
+
+static uint8_t *
+gpu_ptr (uint32_t a, uint32_t n)
+{
+  if (a >= pscr_gpu && a - pscr_gpu + (uint64_t) n <= pscr_bytes)
+    return pscr + (a - pscr_gpu);
+  if ((uint64_t) a + n <= (uint64_t) area_pages * 4096)
+    return area + a;
+  return 0;
+}
+
+static uint32_t
+x5 (uint32_t v) { return (v * 527u + 23u) >> 6; }
+static uint32_t
+x6 (uint32_t v) { return (v * 259u + 33u) >> 6; }
+
+/* a pixel in memory (format fmt) to R, G, B, A and back */
+static void
+unpack (uint32_t fmt, const uint8_t *m, uint8_t *c)
+{
+  if (fmt == 27)
+    memcpy (c, m, 4);
+  else
+    {
+      uint32_t v = m[0] | m[1] << 8;
+      if (fmt == 7)
+	c[0] = (uint8_t) x5 (v >> 11), c[1] = (uint8_t) x6 ((v >> 5) & 63), c[2] = (uint8_t) x5 (v & 31), c[3] = 255;
+      else
+	c[0] = (uint8_t) x5 (v & 31), c[1] = (uint8_t) x5 ((v >> 5) & 31), c[2] = (uint8_t) x5 ((v >> 10) & 31),
+	  c[3] = v >> 15 ? 255 : 0;
+    }
+}
+
+static uint32_t n5 (uint32_t v) { return (v * 31 + 127) / 255; }
+static uint32_t n6 (uint32_t v) { return (v * 63 + 127) / 255; }
+
+static void
+pack (uint32_t fmt, const uint8_t *c, uint8_t *m)
+{
+  if (fmt == 27)
+    memcpy (m, c, 4);
+  else
+    {
+      uint32_t v = fmt == 7 ? n5 (c[0]) << 11 | n6 (c[1]) << 5 | n5 (c[2])
+	: n5 (c[0]) | n5 (c[1]) << 5 | n5 (c[2]) << 10 | (c[3] >= 128) << 15;
+      m[0] = (uint8_t) v, m[1] = (uint8_t) (v >> 8);
+    }
+}
+
+static void
+swap_rb (uint8_t *c)
+{
+  uint8_t t = c[0];
+  c[0] = c[2];
+  c[2] = t;
+}
+
+static void
+exec_present (uint32_t start, uint32_t end)
+{
+  uint8_t *cl = gpu_ptr (start, end - start);
+  uint32_t w = 0, h = 0, col = 0, row = 0;
+  static uint8_t tile[64 * 64 * 4];
+  pjobs++;
+  if (!cl)
+    {
+      pbad_list++;
+      return;
+    }
+  if (pdump)
+    {
+      FILE *o = fopen (pdump, "wb");
+      if (o)
+	{
+	  fwrite (cl, 1, end - start, o);
+	  fclose (o);
+	}
+      pdump = 0;
+    }
+  for (uint32_t i = 0; i < end - start;)
+    {
+      uint8_t op = cl[i];
+      uint64_t g;
+      uint32_t addr;
+      switch (op)
+	{
+	case 121:
+	  if ((cl[i + 1] & 15) == 0)
+	    w = cl[i + 2] | cl[i + 3] << 8, h = cl[i + 4] | cl[i + 5] << 8;
+	  i += 9;
+	  break;
+	case 122: i += 9; break;
+	case 123: i += 5; break;
+	case 126: i += 2; break;
+	case 124:
+	  col = (cl[i + 1] | cl[i + 2] << 8 | cl[i + 3] << 16) & 0xFFF;
+	  row = (cl[i + 1] | cl[i + 2] << 8 | cl[i + 3] << 16) >> 12;
+	  i += 4;
+	  break;
+	case 30:
+	case 29:
+	  {
+	    memcpy (&g, cl + i + 1, 8);
+	    memcpy (&addr, cl + i + 9, 4);
+	    uint32_t fmt = (g >> 12) & 63, mem = (g >> 4) & 7, field = (g >> 28) & 0xFFFFF;
+	    uint32_t bpp = fmt == 27 ? 4 : 2;
+	    /* (0.32) as the GPU: no R/B swap of a 3-channel format (BGR565) */
+	    int swap = ((g >> 20) & 1) && fmt != 7, alpha1 = op == 30 && ((g >> 18) & 1);
+	    if ((g & 0xF) || (fmt != 27 && fmt != 7 && fmt != 45) || (mem != 0 && mem != 4 && mem != 5)
+		|| (mem && (op == 29 || bpp != 4)) || (g >> 48))
+	      {
+		pbad_list++;
+		return;
+	      }
+	    for (uint32_t y = 0; y < 64 && row * 64 + y < h; y++)
+	      for (uint32_t x = 0; x < 64 && col * 64 + x < w; x++)
+		{
+		  uint32_t px = col * 64 + x, py = row * 64 + y;
+		  uint32_t off = mem ? uif_pixel_offset (field * 8, px, py, mem == 5)
+		    : py * field + px * bpp;
+		  uint8_t *m = gpu_ptr (addr + off, bpp), *c = tile + (y * 64 + x) * 4;
+		  if (!m)
+		    {
+		      pbad_list++;
+		      return;
+		    }
+		  if (op == 30)
+		    {
+		      unpack (fmt, m, c);
+		      if (swap)
+			swap_rb (c);
+		      if (alpha1)
+			c[3] = 255;
+		    }
+		  else
+		    {
+		      uint8_t t[4];
+		      memcpy (t, c, 4);
+		      if (swap)
+			swap_rb (t);
+		      pack (fmt, t, m);
+		    }
+		}
+	    i += 13;
+	    break;
+	  }
+	case 26: case 27: case 1: i += 1; break;
+	case 13:
+	  if (i + 1 != end - start)
+	    pbad_list++;
+	  return;
+	default:
+	  pbad_list++;
+	  return;
+	}
+    }
+  pbad_list++;
+}
+
+/* the screen as it should be: each rectangle clipped, each pixel taken
+   from the source (raster or UIF, its format) and put in the screen's */
+static void
+want_rects (const struct drm_riscos_present *a, const uint8_t *src,
+	    const struct drm_riscos_present_rect *r, uint32_t n)
+{
+  uint32_t sbpp = a->format == DRM_FORMAT_RGB565 ? 2 : 4;
+  int sswap = a->format == DRM_FORMAT_ARGB8888 || a->format == DRM_FORMAT_XRGB8888;
+  uint32_t dfmt = psc.kind == V3D_SCREEN_RGBA8 ? 27 : psc.kind == V3D_SCREEN_565 ? 7 : 45;
+  uint32_t dbpp = dfmt == 27 ? 4 : 2;
+  for (uint32_t k = 0; k < n; k++)
+    for (int32_t y = 0; y < r[k].height; y++)
+      for (int32_t x = 0; x < r[k].width; x++)
+	{
+	  int64_t dx = (int64_t) r[k].dst_x + x, dy = (int64_t) r[k].dst_y + y;
+	  int64_t sx = (int64_t) r[k].src_x + x, sy = (int64_t) r[k].src_y + y;
+	  if (dx < 0 || dy < 0 || dx >= psc.width || dy >= psc.height
+	      || sx < 0 || sy < 0 || sx >= a->width || sy >= a->height)
+	    continue;
+	  uint32_t so = (a->flags & DRM_RISCOS_PRESENT_SRC_UIF)
+	    ? uif_pixel_offset (a->uif_height_or_stride, (uint32_t) sx, (uint32_t) sy, 0)
+	    : (uint32_t) sy * a->uif_height_or_stride + (uint32_t) sx * sbpp;
+	  uint8_t c[4];
+	  unpack (sbpp == 4 ? 27 : 7, src + so, c);
+	  if (sswap)
+	    swap_rb (c);
+	  c[3] = 255;
+	  if (psc.rb_swap)
+	    swap_rb (c);
+	  pack (dfmt, c, pwant + psc.off + (uint32_t) dy * psc.stride + (uint32_t) dx * dbpp);
+	}
+}
+
+static int
+scr_same (void)
+{
+  if (pbad_list)
+    printf ("  bad lists: %u\n", pbad_list);
+  for (uint32_t i = 0; i < sizeof pscr; i++)
+    if (pscr[i] != pwant[i])
+      {
+	printf ("  screen differs at %u (row %u, byte %u): %02x, want %02x\n", i,
+		(i - psc.off) / psc.stride, (i - psc.off) % psc.stride, pscr[i], pwant[i]);
+	return 0;
+      }
+  return !pbad_list;
+}
+
+static int
+present_ (int f, struct drm_riscos_present *a)
+{
+  int ret = ioctl_ (f, DRM_IOCTL_RISCOS_PRESENT, a);
+  if (auto_finish)
+    while (!v3d_idle (dev))
+      {
+	plat_wait ();
+	v3d_service (dev);
+      }
+  return ret;
+}
+
+static void
+test_031_present (void)
+{
+  setup (42);
+  CHECK (v3d_hw_probe (dev) == 0 && v3d_init (dev) == 0);
+  CHECK (dev->present.file == -1);
+  int f = v3d_open (dev, 1);
+  uint32_t soff;
+  uint32_t src = bo_new (f, 512 * 1024, &soff);
+  uint8_t *sp = area + soff;
+  for (uint32_t i = 0; i < 512 * 1024; i++)
+    sp[i] = (uint8_t) (i * 13 + (i >> 9) * 7 + (i >> 17));
+  struct drm_riscos_present_rect rr[5] = {
+    { 100, 50, 150, 100, 10, 20 },		/* inside */
+    { 600, 450, 100, 100, 0, 0 },		/* over the screen's corner */
+    { -20, -10, 90, 70, 5, 5 },			/* over its top left */
+    { 700, 10, 30, 30, 0, 0 },			/* off the screen */
+    { 300, 300, 80, 80, 260, 150 },		/* over the source's corner */
+  };
+  struct drm_riscos_present a = {
+    .handle = src, .format = DRM_FORMAT_ABGR8888, .width = 300, .height = 200,
+    .uif_height_or_stride = 1216, .rect_count = 5, .rects = (uintptr_t) rr,
+  };
+  /* not offered (no screen hook): -ENOTTY, EGL falls back */
+  CHECK (present_ (f, &a) == -V3D_ENOTTY && dev->present.file == -1);
+  dev->present_screen = fake_screen;
+  /* a 640x480 32bpp screen, stride 2600, the VDU writing to its second bank */
+  psc = (struct v3d_screen) { 0x3E010000ull, sizeof pscr, 2600 * 480, 2600, 640, 480,
+			      V3D_SCREEN_RGBA8, 0, 0 };
+  psc_ret = 0;
+  present_exec = exec_present;
+  auto_finish = 1;
+  for (uint32_t i = 0; i < sizeof pscr; i++)
+    pscr[i] = (uint8_t) (i * 5 + 3);
+  memcpy (pwant, pscr, sizeof pscr);
+  uint32_t out = syncobj (f, 0);
+  a.out_sync = out;
+  auto_finish = 0;
+  pjobs = 0;
+  CHECK (present_ (f, &a) == 0 && dev->present.file >= 0 && pjobs == 1);
+  pscr_gpu = dev->present.scr_gpu;		/* known once mapped */
+  pscr_bytes = sizeof pscr;
+  CHECK (!syncobj_done (f, out));		/* not until the jobs finish */
+  CHECK (dev->present.presents == 1 && dev->present.rects == 4 && dev->present.clipped_away == 1);
+  /* the first job ran before pscr_gpu was known: do it all again */
+  while (busy[V3D_RENDER])
+    sim_finish (V3D_RENDER);
+  v3d_service (dev);
+  CHECK (syncobj_done (f, out));
+  memcpy (pscr, pwant, sizeof pscr);
+  pjobs = 0;
+  pbad_list = 0;
+  auto_finish = 1;
+  CHECK (present_ (f, &a) == 0 && pjobs == 4);
+  want_rects (&a, sp, rr, 5);
+  CHECK (scr_same ());
+  /* ARGB onto a TRGB screen (two swaps), 16bpp 5:6:5 TBGR and 1:5:5:5 */
+  static const struct { uint32_t fourcc, kind, swap, stride; } cases[] = {
+    { DRM_FORMAT_ARGB8888, V3D_SCREEN_RGBA8, 1, 2600 },
+    { DRM_FORMAT_XBGR8888, V3D_SCREEN_RGBA8, 1, 2560 },
+    { DRM_FORMAT_RGB565, V3D_SCREEN_565, 1, 1280 },	/* (0.32) through the staging buffer */
+    { DRM_FORMAT_ABGR8888, V3D_SCREEN_565, 1, 1280 },	/* (0.32) MESA's C64K: blue at the top */
+    { DRM_FORMAT_RGB565, V3D_SCREEN_565, 0, 1300 },
+    { DRM_FORMAT_ABGR8888, V3D_SCREEN_5551, 0, 1280 },
+    { DRM_FORMAT_ARGB8888, V3D_SCREEN_5551, 1, 1280 },
+  };
+  for (unsigned k = 0; k < sizeof cases / sizeof cases[0]; k++)
+    {
+      psc.kind = cases[k].kind;
+      psc.rb_swap = cases[k].swap;
+      psc.stride = cases[k].stride;
+      psc.off = k * 4096 + (k & 1) * 2;
+      a.format = cases[k].fourcc;
+      a.uif_height_or_stride = a.format == DRM_FORMAT_RGB565 ? 640 : 1216;
+      pbad_list = 0;
+      if (k == 6)
+	pdump = "out/cl2d/present-5551.bin";
+      CHECK (present_ (f, &a) == 0);
+      if (k == 6)
+	{
+	  FILE *o = fopen ("out/cl2d/present", "w");
+	  if (o)
+	    {
+	      fprintf (o, "5551 %u %u %u %u\n", soff + 20 * 1216 + 10 * 4,
+		       pscr_gpu + psc.off + 50 * psc.stride + 100 * 2, 150, 100);
+	      fclose (o);
+	    }
+	}
+      want_rects (&a, sp, rr, 5);
+      CHECK (scr_same ());
+    }
+  /* (0.32) MESA's case exactly: blue (ABGR 00 00 FF FF) onto 5:6:5 TBGR
+     is &F800 (blue at the top), not &001F */
+  {
+    psc.kind = V3D_SCREEN_565, psc.rb_swap = 1, psc.stride = 1280, psc.off = 0;
+    struct drm_riscos_present b = a;
+    b.format = DRM_FORMAT_ABGR8888, b.uif_height_or_stride = 1216;
+    struct drm_riscos_present_rect br[1] = { { 0, 0, 1, 1, 0, 0 } };
+    b.rects = (uintptr_t) br, b.rect_count = 1;
+    uint8_t keep[4];
+    memcpy (keep, sp, 4);
+    sp[0] = 0, sp[1] = 0, sp[2] = 0xFF, sp[3] = 0xFF;
+    CHECK (present_ (f, &b) == 0 && (pscr[0] | pscr[1] << 8) == 0xF800);
+    memcpy (sp, keep, 4);
+    memcpy (pwant, pscr, sizeof pscr);
+  }
+  /* a UIF source (100x70, padded to 72 rows), untiled first */
+  psc.kind = V3D_SCREEN_RGBA8, psc.rb_swap = 0, psc.stride = 2600, psc.off = 0;
+  struct drm_riscos_present u = a;
+  u.format = DRM_FORMAT_ABGR8888, u.flags = DRM_RISCOS_PRESENT_SRC_UIF;
+  u.width = 100, u.height = 70, u.uif_height_or_stride = 72;
+  struct drm_riscos_present_rect ur[2] = { { 30, 40, 100, 70, 0, 0 }, { 400, 300, 50, 30, 33, 21 } };
+  u.rects = (uintptr_t) ur, u.rect_count = 2;
+  pjobs = 0;
+  pbad_list = 0;
+  pdump = "out/cl2d/present-uif.bin";
+  uint32_t untiled = dev->present.untiled;
+  CHECK (present_ (f, &u) == 0 && pjobs == 3 && dev->present.untiled == untiled + 1 && dev->present.stage_handle);
+  {
+    FILE *o = fopen ("out/cl2d/present", "a");
+    if (o)
+      {
+	fprintf (o, "uif %u %u %u %u\n", soff, dev->present.stage_gpu, 100, 70);
+	fclose (o);
+      }
+  }
+  want_rects (&u, sp, ur, 2);
+  CHECK (scr_same ());
+  u.uif_height_or_stride = 70;			/* not whole blocks */
+  CHECK (present_ (f, &u) == -V3D_EINVAL);
+  u.uif_height_or_stride = 64;			/* shorter than the image */
+  CHECK (present_ (f, &u) == -V3D_EINVAL);
+  /* checks without drawing, and refusals */
+  struct drm_riscos_present q = { .handle = 0, .rect_count = 0 };
+  uint32_t probes = dev->present.probes;
+  pjobs = 0;
+  CHECK (present_ (f, &q) == 0 && dev->present.probes == probes + 1 && pjobs == 0);
+  q = a;
+  q.rect_count = 0;
+  CHECK (present_ (f, &q) == 0 && pjobs == 0);
+  q.handle = 999;
+  CHECK (present_ (f, &q) == -V3D_ENOENT);
+  q = a;
+  q.flags = DRM_RISCOS_PRESENT_VSYNC;
+  CHECK (present_ (f, &q) == -V3D_EOPNOTSUPP);
+  q.flags = 0x80;
+  CHECK (present_ (f, &q) == -V3D_EINVAL);
+  q = a;
+  q.format = 0x34325258u + 1;
+  CHECK (present_ (f, &q) == -V3D_EINVAL);
+  q = a;
+  q.uif_height_or_stride = 1000;		/* under width x 4 */
+  CHECK (present_ (f, &q) == -V3D_EINVAL);
+  q.height = 600, q.uif_height_or_stride = 1216;	/* past the BO */
+  CHECK (present_ (f, &q) == -V3D_EINVAL);
+  q = a;
+  q.rect_count = DRM_RISCOS_PRESENT_MAX_RECTS + 1;
+  CHECK (present_ (f, &q) == -V3D_EINVAL);
+  psc.kind = 9;					/* a screen it doesn't take */
+  CHECK (present_ (f, &a) == -V3D_EINVAL);
+  psc.kind = V3D_SCREEN_RGBA8;
+  psc.cached = 1;
+  CHECK (present_ (f, &a) == -V3D_EBUSY);
+  psc.cached = 0;
+  psc_ret = -V3D_EINVAL;
+  CHECK (present_ (f, &a) == -V3D_EINVAL);
+  psc_ret = 0;
+  CHECK (dev->present.refused >= 11);
+  /* everything off the screen: nothing drawn, out_sync signalled at once */
+  struct drm_riscos_present_rect off[1] = { { 2000, 0, 10, 10, 0, 0 } };
+  q = a;
+  q.rects = (uintptr_t) off, q.rect_count = 1;
+  uint32_t out2 = syncobj (f, 0);
+  q.out_sync = out2;
+  pjobs = 0;
+  CHECK (present_ (f, &q) == 0 && pjobs == 0 && syncobj_done (f, out2));
+  /* the program's frame first: its job on the source, then the present
+     after it (implicit, by the source BO), and after in_sync */
+  auto_finish = 0;
+  struct drm_v3d_submit_cl k = { .rcl_start = 0x10, .rcl_end = 0x20,
+				 .bo_handles = (uintptr_t) &src, .bo_handle_count = 1 };
+  present_exec = 0;
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_CL, &k) == 0 && busy[V3D_RENDER]);
+  uint32_t in = syncobj (f, 0);
+  struct drm_v3d_submit_tfu tfu = { 0 };
+  tfu.out_sync = in;
+  tfu.ios = 1;
+  tfu.iia = 0x1000;
+  tfu.ioa = 0x2000;
+  CHECK (ioctl_ (f, DRM_IOCTL_V3D_SUBMIT_TFU, &tfu) == 0);
+  q = a;
+  q.in_sync = in;
+  q.out_sync = out;
+  uint32_t emitted = dev->emitted[V3D_RENDER];
+  CHECK (present_ (f, &q) == 0 && dev->emitted[V3D_RENDER] == emitted + 4);
+  struct v3d_job *j = dev->head[V3D_RENDER];
+  CHECK (j && j->dep[V3D_RENDER] == emitted && j->dep[V3D_TFU] != 0 && !syncobj_done (f, out));
+  auto_finish = 1;
+  while (!syncobj_done (f, out))
+    {
+      plat_wait ();
+      v3d_service (dev);
+    }
+  /* many presents: the list buffer's parts taken in turn, each waited for */
+  present_exec = exec_present;
+  uint32_t slot0 = dev->present.slot;
+  for (int i = 0; i < 40; i++)
+    CHECK (present_ (f, &a) == 0);
+  CHECK (dev->present.slot != slot0 || dev->present.jobs > 160);
+  /* the list split into bands: only the asked rows, and nothing past the room */
+  {
+    static uint8_t cl[8192];
+    uint32_t len = v3d_present_rcl (cl, sizeof cl, 0x1000, 0x2000, 0, 0x3000, 0, 640, 480, 2, 3);
+    CHECK (len == 52 + 10 * 3 * 32 + 1 && cl[52] == 124
+	   && (cl[53] | cl[54] << 8 | cl[55] << 16) == 2u << 12);
+    CHECK (v3d_present_rcl (cl, 52 + 10 * 3 * 32, 0x1000, 0x2000, 0, 0x3000, 0, 640, 480, 2, 3) == 0);
+    CHECK (v3d_present_rcl (cl, sizeof cl, 0x1000, 0x2000, 0, 0x3000, 0, 640, 480, 7, 2) == 0);
+  }
+  /* a mode change: the new framestore mapped, the old let go */
+  int sbo = dev->files[dev->present.file].handles[dev->present.scr_handle];
+  psc.fs_pa = 0x3E810000ull;
+  CHECK (present_ (f, &a) == 0 && !dev->bos[sbo].used
+	 && dev->files[dev->present.file].handles[dev->present.scr_handle] != sbo);
+  pres[0] = dev->present.presents, pres[1] = dev->present.rects;
+  pres[2] = dev->present.jobs, pres[3] = dev->present.refused;
+  /* the last program closed: PRESENT's file goes too */
+  present_exec = 0;
+  v3d_close (dev, f);
+  CHECK (dev->present.file == -1 && !v3d_programs_open (dev));
+  for (int i = 0; i < V3D_MAX_FILES; i++)
+    CHECK (!dev->files[i].used);
+  auto_finish = 0;
+  teardown ();
+}
+
 int
 main (void)
 {
@@ -1391,6 +1941,9 @@ main (void)
   test_many ();
   test_025_pool ();
   test_026_no_page_ops ();
+  test_030_tables ();
+  test_031_present ();
+  printf ("  present: %u presents, %u rectangles, %u jobs, %u refused\n", pres[0], pres[1], pres[2], pres[3]);
   printf ("%d checks, %d failed\n", checks, failures);
   return failures != 0;
 }

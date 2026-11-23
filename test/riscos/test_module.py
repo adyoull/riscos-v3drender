@@ -211,6 +211,17 @@ class Pi4(Machine):
             return
         if base == 0x1E and r[0] == 18:           # OS_Module lookup: nothing loaded
             return self._fail(number, 0x102, "Module '%s' not found" % self.cstr(r[1]))
+        if base == 0x35:                          # (0.29) OS_ReadModeVariable
+            mv = getattr(self, "modevars", {9: 5, 0: 0x40, 11: 1919, 12: 1199, 3: 0xFFFFFFFF})
+            if r[1] not in mv:
+                return self._fail(number, 0xAA, "Bad mode variable")
+            out(2, mv[r[1]])
+            return
+        if base == 0x3F:                          # (0.29) OS_CheckModeValid
+            sel = [self.word(r[0] + 4 * i) for i in range(10)]
+            self.checked_modes = getattr(self, "checked_modes", []) + [sel]
+            out(0, r[0] if getattr(self, "alpha_ok", False) else 0xFFFFFFFF)
+            return
         if base == 0x0D:                          # (0.27) OS_Find
             if not hasattr(self, "files"):
                 self.files, self.handles, self.ftypes = {}, {}, {}
@@ -271,6 +282,12 @@ class Pi4(Machine):
                 out(3, start)
                 return
             if reason == 65:
+                sm = getattr(self, "screen_map", None)   # (0.31) the screen's logical address
+                if sm and sm[0] <= r[1] < sm[0] + sm[2]:
+                    pa = sm[1] + (r[1] - sm[0])
+                    out(0, pa & 0xFFFFFFFF)
+                    out(1, pa >> 32)
+                    return
                 um = getattr(self, "user_mem", None)
                 if um and um[0] <= r[1] < um[0] + um[1]:
                     pa = 0x500000000 + (r[1] - um[0])     # the program's memory
@@ -386,6 +403,16 @@ class Pi4(Machine):
 
     def dynamic_area(self, number, r, out):
         reason = r[0]
+        if reason == 8:                           # (0.30) clamps, as RISC OS 5.30's 128 MB
+            old = getattr(self, "da_clamps", [0xFFFFFFFF, 0x8000000, 0xFFFFF000])
+            new = list(old)
+            for i in range(3):
+                if r[1 + i]:
+                    new[i] = r[1 + i]
+            self.da_clamps = new
+            self.clamp_calls = getattr(self, "clamp_calls", []) + [tuple(new)]
+            out(1, old[0]); out(2, old[1]); out(3, old[2])
+            return
         if reason == 2 and r[1] == 2:             # (0.17) the screen's area
             out(4, self.screen_da_flags)
             return
@@ -408,10 +435,13 @@ class Pi4(Machine):
                 return self._fail(number, 0x1E5, "Not enough address space")  # 1 GB won't fit here
             if getattr(self, "pmp_fail", False):
                 return self._fail(number, 0x1E5, "Not enough address space")  # (0.24) none at all
+            clamp = getattr(self, "da_clamps", [0xFFFFFFFF, 0x8000000, 0xFFFFF000])[1]
+            got = min(r[5], clamp)                # (0.30) the clamp, as RISC OS
             self.areas[n] = dict(base=self.area_next, pages=r[9], claimed={}, mapped={},
-                                 name=self.cstr(r[8]))
+                                 name=self.cstr(r[8]), got=got)
             out(1, n)
             out(3, self.area_next)
+            out(5, got)
             self.area_next += size
             return
         if reason == 1:
@@ -496,7 +526,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 28 and out[8] != 0, "version 0.28, statistics in r8")
+    check(out[0] == 33 and out[8] != 0, "version 0.33, statistics in r8")
     check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
@@ -531,6 +561,24 @@ def main():
         cut = bytes(m.uc.mem_read(B, 21))
         check(not v and o[2] == need and cut[19] == 0 and cut[20] == 0xAA and cut[:19] == txt[:19],
               "reason 4 into 20 bytes: 19 and a 0, nothing past it")
+        # (0.29) Z-layer complex overlays, in all three states
+        def hw():
+            o, v, _ = m.call(d["entry"], {0: 4, 1: B, 2: 600, 12: d["r12"]})
+            return bytes(m.uc.mem_read(B, o[2])).split(b"\0")[0].decode()
+        t1 = hw()
+        check("Z-layer complex overlays\toff: needs framebuffer_ignore_alpha=0" in t1,
+              "(0.29) no alpha modes offered: needs the config.txt line")
+        sel = m.checked_modes[-1]
+        check(sel[:4] == [1, 1920, 1200, 5] and sel[5:7] == [0, 0x8040] and sel[9] == 0xFFFFFFFF,
+              "(0.29) asks for this mode's alpha form (%s)" % sel)
+        m.alpha_ok = True
+        check("Z-layer complex overlays\toff: available" in hw(), "(0.29) alpha mode available")
+        m.modevars = {9: 5, 0: 0x8040, 11: 1919, 12: 1199, 3: 0xFFFFFFFF}
+        check("Z-layer complex overlays\ton: video overlays behind the desktop" in hw(), "(0.29) on in an alpha mode")
+        m.modevars = {9: 4, 0: 0x4040, 11: 1919, 12: 1199, 3: 65535}
+        check("Z-layer complex overlays\toff: needs a 16 million colour desktop" in hw(), "(0.29) 16bpp: needs 16M colours")
+        del m.modevars
+        m.alpha_ok = False
         # (0.28) reason 5: desktop 2D, the same as *V3DRender 2D
         o, v, _ = m.call(d["entry"], {0: 5, 1: 0xFFFFFFFF, 12: d["r12"]})
         check(not v and o[0] == 0, "(0.28) reason 5 reads: off")
@@ -1242,6 +1290,87 @@ def test_2d(data):
     check(err is None and m.gfxv is None and not m.areas, "finalised: GraphicsV released, areas gone")
 
 
+def test_031_present(data):
+    """(0.31) DRM_IOCTL_RISCOS_PRESENT through the module: the screen read
+    from the VDU variables, GraphicsV 9 and OS_Memory 65 (the VDU's bank),
+    the formats it takes, and the jobs on the program's queue"""
+    FS = 0x3E000000
+    m = Pi4()
+    m.vdu = {0: 0, 3: 0xFFFFFFFF, 9: 5, 6: 7680, 11: 1919, 12: 1079, 148: 0xFE000000 + 7680 * 1080,
+             0x94: 0xFE000000, 0x95: 0xFE000000, 0x96: 7680 * 1080}
+    m.fs = (FS, 16 << 20)
+    m.screen_map = (0xFE000000, FS, 16 << 20)
+    m.screen_flags = 0
+    m.screen_da_flags = 1 << 5 | 1 << 4
+    mod = Module(m, data, 0x20010000)
+    check(initialise(mod, "NoWFI") is None, "(0.31) loads")
+    check(getattr(m, "gfxv", None) is None, "(0.31) 2D off: GraphicsV not claimed")
+    out, e = mod.swi(1, {0: 0})
+    f = out[0]
+    A = SCRATCH + 0x8000
+
+    def io(req, payload):
+        m.uc.mem_write(A, payload)
+        o, e2 = mod.swi(3, {0: f, 1: req, 2: A})
+        check(e2 is None, "ioctl raised no error: %s" % e2)
+        return o[0] - (1 << 32) if o[0] & 0x80000000 else o[0]
+    ret, b = None, None
+    m.uc.mem_write(A, struct.pack("<IIII", 640 * 480 * 4, 0, 0, 0))
+    o, _ = mod.swi(3, {0: f, 1: R["IOCTL_CREATE_BO"], 2: A})
+    _, _, h, off = struct.unpack("<IIII", bytes(m.uc.mem_read(A, 16)))
+    RECTS = A + 0x200
+    m.uc.mem_write(RECTS, struct.pack("<12i", 0, 0, 640, 480, 0, 0, 1900, 1070, 100, 100, 0, 0))
+
+    def present(flags=0, fmt=0x34324241, count=2, stride=2560, handle=None):
+        return io(R["IOCTL_PRESENT"], struct.pack("<8IQII", h if handle is None else handle, fmt, flags,
+                                                     640, 480, stride, count, 0, RECTS, 0, 0))
+    check(present(count=0) == 0, "(0.31) a check without drawing")
+    n = len(m.started)
+    check(present() == 0, "(0.31) a 32bpp TBGR screen, the second bank")
+    jobs = [s for s in m.started[n:] if s[0] == "render"]
+    check(len(jobs) == 1 and jobs[0][2] - jobs[0][1] == 52 + 10 * 8 * 32 + 1,
+          "(0.31) the first rectangle's job (10x8 tiles) started: %s" % jobs)
+    for _ in range(4):
+        m.finish(R["INT_FRDONE"])
+    jobs = [s for s in m.started[n:] if s[0] == "render"]
+    check(len(jobs) == 2 and jobs[1][2] - jobs[1][1] == 52 + 1 * 1 * 32 + 1,
+          "(0.31) then the clipped one (20x10: one tile): %s" % jobs)
+    check(present(flags=2) == -95, "(0.31) VSYNC isn't offered: -EOPNOTSUPP")
+    check(present(fmt=0x36314752, stride=1280) == 0, "(0.31) an RGB565 source")
+    m.finish(R["INT_FRDONE"])
+    m.finish(R["INT_FRDONE"])
+    m.vdu.update({0: 0x80, 3: 65535, 9: 4, 6: 3840})      # 16bpp 5:6:5
+    check(present() == 0, "(0.31) a 5:6:5 screen")
+    m.finish(R["INT_FRDONE"])
+    m.finish(R["INT_FRDONE"])
+    m.vdu.update({0: 0x4000})                             # 1:5:5:5 TRGB
+    check(present() == 0, "(0.31) a 1:5:5:5 TRGB screen")
+    m.finish(R["INT_FRDONE"])
+    m.finish(R["INT_FRDONE"])
+    m.vdu.update({0: 0, 3: 4095})                         # 4,096 colours
+    check(present(count=0) == -22, "(0.31) a 4K screen: -EINVAL")
+    m.vdu.update({3: 255, 9: 3, 6: 1920})                 # 256 colours
+    check(present(count=0) == -22, "(0.31) 8bpp: -EINVAL")
+    m.vdu.update({0: 0, 3: 0xFFFFFFFF, 9: 5, 6: 7680})
+    m.screen_da_flags = 1 << 4                            # cacheable
+    check(present() == -16, "(0.31) a screen the CPU caches: -EBUSY")
+    m.screen_da_flags = 1 << 5 | 1 << 4
+    m.vdu[148] = 0x80000000                               # not the screen
+    check(present(count=0) == -22, "(0.31) the VDU writing outside the framestore: -EINVAL")
+    m.vdu[148] = 0xFE000000
+    check(present(handle=77) == -2, "(0.31) a bad handle: -ENOENT")
+    m.output = ""
+    mod.command("V3DRender")
+    check("Presents:              4 (" in m.output and "refused:" in m.output,
+          "(0.31) *V3DRender shows them:\n%s" % [l for l in m.output.splitlines() if "resent" in l or "refused" in l])
+    mod.swi(2, {0: f})                                    # the last program: PRESENT's file goes
+    m.output = ""
+    mod.command("V3DRender")
+    check("Files open:            0" in m.output, "(0.31) no files left open")
+    err = mod.finalise()
+    check(err is None and not m.areas, "(0.31) finalised")
+
+
 def test_domain_first(data):
     """(0.20) the firmware's V3D power domain is turned on before any V3D
     register is read: a CM4 aborted at start-up, most likely from the
@@ -1287,6 +1416,44 @@ def test_start_fails_part_way(data):
     check(err is not None and steps[-1:] == ["5 memory"], "fails at step 5: %s (%s)" % (steps[-1:], err))
     check(getattr(m, "vector", None) is None and not m.areas, "nothing left claimed")
 
+def test_030_clamp(data):
+    """(0.30) the 128 MB clamp lifted for V3DRender's area and put back;
+    the area's real size used"""
+    m = Pi4()
+    mod = Module(m, data, 0x20010000)
+    check(initialise(mod, "NoWFI") is None, "loads")
+    bo = [a for a in m.areas.values() if a["name"] == "V3DRender buffers"][0]
+    check(bo["got"] == 256 << 20, "(0.30) the buffer area is the 256 MB asked for (%x)" % bo["got"])
+    check(m.da_clamps[1] == 0x8000000 and (0, 0xFFFFFFFF, 0) != m.clamp_calls[0]
+          and m.clamp_calls[0][1] == 0xFFFFFFFF and m.clamp_calls[-1][1] == 0x8000000,
+          "(0.30) the clamp lifted, then put back (%s)" % m.clamp_calls)
+    m.output = ""
+    mod.command("V3DRender")
+    check("Buffer memory (KB):    262144\n" in m.output.replace("\r", "")
+          and "buffers (BOs):" in m.output and "of 1023 (grows to 65535)" in m.output,
+          "(0.30) *V3DRender: the area and the BO table")
+    mod.finalise(0)
+    # a clamp it can't lift (an older OS): it uses what it got, and says so
+    m = Pi4()
+    m.da_clamps = [0xFFFFFFFF, 0x4000000, 0xFFFFF000]
+    real_swi = m.dynamic_area
+    def no8(number, r, out):
+        if r[0] == 8:
+            return m._fail(number, 0x1E6, "Unknown dynamic area reason")
+        return real_swi(number, r, out)
+    m.dynamic_area = no8
+    mod = Module(m, data, 0x20010000)
+    check(initialise(mod, "NoWFI") is None, "loads with a 64 MB clamp")
+    m.output = ""
+    mod.command("V3DRender")
+    check("Buffer memory (KB):    65536 (asked for 262144: RISC OS gave less)" in m.output,
+          "(0.30) *V3DRender says the area is smaller than asked (%s)"
+          % [l for l in m.output.splitlines() if "Buffer memory" in l])
+    o, e = mod.swi(0, {})
+    check(e is None and o[4] == 64 << 20, "(0.30) Info r4: the real area size")
+    mod.finalise(0)
+
+
 def test_027_log_and_options(data):
     """(0.27) the start-up log and the diagnostic load options"""
     # every step in the log, appended, as text
@@ -1302,7 +1469,9 @@ def test_027_log_and_options(data):
     check(any(l.startswith("options: NoWFI Size 256 MB; 2048 MB of RAM") for l in lines),
           "(0.27) the options and RAM in the log")
     check(any(l.startswith("HAL_IRQClear at &") for l in lines), "(0.27) HAL_IRQClear's address")
-    check(m.ftypes.get("$.V3DLog") == 0xFFF and log.splitlines()[0].split(" cs  ")[1].startswith("V3DRender 0.28: "),
+    check("registering with RISC3D" in lines and "registered with RISC3D" in lines,
+          "(0.33) the registration in the log")
+    check(m.ftypes.get("$.V3DLog") == 0xFFF and log.splitlines()[0].split(" cs  ")[1].startswith("V3DRender 0.33: "),
           "(0.27) a text file, each line timed and versioned")
     # the first interrupt, noted from a callback
     m.finish(R["INT_FRDONE"])
@@ -1311,6 +1480,16 @@ def test_027_log_and_options(data):
     run_callbacks(m)
     log = m.files["$.V3DLog"].decode("latin-1")
     check(log.count("first GPU interrupt") == 1, "(0.27) the first interrupt noted, once")
+    # (0.33) later events, each logged the first time only
+    mod.swi(1, {0: 0})
+    mod.swi(1, {0: 0})
+    m.call(mod.base + mod.service, {1: 0x4D, 12: m.pw})
+    m.call(mod.base + mod.service, {1: 0x46, 12: m.pw})
+    m.call(mod.base + mod.service, {1: 0x46, 12: m.pw})
+    log = m.files["$.V3DLog"].decode("latin-1")
+    check(log.count("first program opening the GPU") == 1 and log.count("first mode change starting") == 1
+          and log.count("first mode change done") == 1,
+          "(0.33) later events logged once each:\n%s" % log[-400:])
     n = len(log.splitlines())
     mod.finalise(0)
     log = m.files["$.V3DLog"].decode("latin-1")
@@ -1327,6 +1506,23 @@ def test_027_log_and_options(data):
     check(err is not None and lines[-3] == "5 memory" and lines[-2].startswith("failed: &")
           and lines[-1] == "final (fatal)",
           "(0.27) the failure and its error in the log: %s" % lines[-3:])
+
+    # (0.33) V3DRender$Options when RMLoad gives none (RISC3D's !Boot)
+    m = Pi4()
+    m.vars = {"V3DRender$Options": "NoIRQ NoRISC3D LowMem Log RAM::RamDisc0.$.Boot"}
+    mod = Module(m, data, 0x20010000)
+    err = initialise(mod, "")
+    lines = [l.split(": ", 1)[1] for l in m.files.get("RAM::RamDisc0.$.Boot", b"").decode("latin-1").splitlines()]
+    check(err is None and any(l.startswith("options: NoIRQ NoRISC3D LowMem Size 256 MB") for l in lines)
+          and m.vector is None and not getattr(m, "risc3d", None),
+          "(0.33) V3DRender$Options used with no command tail: %s" % lines[:3])
+    mod.finalise(0)
+    m = Pi4()
+    m.vars = {"V3DRender$Options": "NoIRQ"}
+    mod = Module(m, data, 0x20010000)
+    check(initialise(mod, "NoWFI") is None and m.vector is not None,
+          "(0.33) the command tail wins over V3DRender$Options")
+    mod.finalise(0)
 
     # no log asked for: no file
     m = Pi4()
@@ -1393,6 +1589,8 @@ try:
     test_start_fails_part_way(open(sys.argv[1], "rb").read())
     test_domain_first(open(sys.argv[1], "rb").read())
     test_027_log_and_options(open(sys.argv[1], "rb").read())
+    test_030_clamp(open(sys.argv[1], "rb").read())
+    test_031_present(open(sys.argv[1], "rb").read())
 except (EmuError, UcError) as e:
     failures += 1
     print("FAIL:", e)

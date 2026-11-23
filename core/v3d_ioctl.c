@@ -34,7 +34,7 @@ v3d_file_valid (struct v3d_dev *v3d, int file)
 static int
 lookup_bo (struct v3d_dev *v3d, int file, uint32_t handle)
 {
-  if (handle == 0 || handle >= V3D_MAX_HANDLES)
+  if (handle == 0 || handle >= v3d->files[file].nhandles)
     return 0;
   return v3d->files[file].handles[handle];
 }
@@ -112,7 +112,9 @@ v3d_open (struct v3d_dev *v3d, uint32_t owner)
     if (!v3d->files[f].used)
       {
 	struct v3d_file *file = &v3d->files[f];
-	file->handles = plat_alloc (V3D_MAX_HANDLES * sizeof *file->handles);
+	file->handles = plat_alloc (V3D_FIRST_HANDLES * sizeof *file->handles);
+	if (file->handles)
+	  memset (file->handles, 0, V3D_FIRST_HANDLES * sizeof *file->handles);
 	file->syncobjs = plat_alloc (V3D_MAX_SYNCOBJS * sizeof *file->syncobjs);
 	if (!file->handles || !file->syncobjs)
 	  {
@@ -122,6 +124,7 @@ v3d_open (struct v3d_dev *v3d, uint32_t owner)
 	  }
 	file->used = 1;
 	file->owner = owner;
+	file->nhandles = V3D_FIRST_HANDLES;
 	return f;
       }
   return -V3D_EBUSY;
@@ -136,12 +139,16 @@ v3d_close (struct v3d_dev *v3d, int f)
     return;
   v3d_service (v3d);
   struct v3d_file *file = &v3d->files[f];
-  for (int h = 1; h < V3D_MAX_HANDLES; h++)
+  for (uint32_t h = 1; h < file->nhandles; h++)
     if (file->handles[h])
       v3d_bo_put (v3d, file->handles[h]);
   plat_free (file->handles);
   plat_free (file->syncobjs);
   memset (file, 0, sizeof *file);
+  /* (0.31) the last program gone: PRESENT's file too (its jobs keep
+     what they use until they finish) */
+  if (!v3d_internal_file (v3d, f) && v3d->present.file >= 0 && !v3d_programs_open (v3d))
+    v3d_present_stop (v3d);
   /* (0.25) the last program gone: its pooled pages back to RISC OS
      (BOs its jobs still hold go back as the jobs are released) */
   v3d_pool_trim (v3d, v3d_programs_open (v3d) ? v3d->pool_max : 0);
@@ -154,19 +161,19 @@ create_bo (struct v3d_dev *v3d, int f, struct drm_v3d_create_bo *args)
 {
   if (args->flags & ~DRM_RISCOS_BO_CPU_CACHED)
     return -V3D_EINVAL;
-  uint16_t *handles = v3d->files[f].handles;
-  uint32_t h;
-  for (h = 1; h < V3D_MAX_HANDLES && handles[h]; h++)
-    ;
-  if (h == V3D_MAX_HANDLES)
-    return -V3D_ENOSPC;
+  uint32_t h = v3d_handle_slot (v3d, f);	/* (0.30) grows */
+  if (!h)
+    {
+      v3d_bo_refused (v3d, V3D_REFUSED_HANDLES, args->size);
+      return -V3D_ENOSPC;
+    }
   v3d_service (v3d);
   int bo, ret = v3d_bo_create_cached (v3d, args->size,
 				      (args->flags & DRM_RISCOS_BO_CPU_CACHED) != 0, &bo);
   if (ret)
     return ret;
   v3d->bos[bo].file = (int16_t) f;
-  handles[h] = (uint16_t) bo;
+  v3d->files[f].handles[h] = (uint16_t) bo;
   args->handle = h;
   args->offset = v3d_bo_offset (v3d, bo);
   return 0;
@@ -176,11 +183,8 @@ create_bo (struct v3d_dev *v3d, int f, struct drm_v3d_create_bo *args)
 static int
 import_memory (struct v3d_dev *v3d, int f, struct drm_riscos_import_memory *args)
 {
-  uint16_t *handles = v3d->files[f].handles;
-  uint32_t h;
-  for (h = 1; h < V3D_MAX_HANDLES && handles[h]; h++)
-    ;
-  if (h == V3D_MAX_HANDLES)
+  uint32_t h = v3d_handle_slot (v3d, f);	/* (0.30) grows */
+  if (!h)
     return -V3D_ENOMEM;
   v3d_service (v3d);
   if ((args->flags & ~DRM_RISCOS_IMPORT_UNCACHED)
@@ -191,7 +195,7 @@ import_memory (struct v3d_dev *v3d, int f, struct drm_riscos_import_memory *args
     return ret;
   v3d->bos[bo].file = (int16_t) f;
   v3d->bos[bo].nocache = (args->flags & DRM_RISCOS_IMPORT_UNCACHED) != 0;
-  handles[h] = (uint16_t) bo;
+  v3d->files[f].handles[h] = (uint16_t) bo;
   args->handle = h;
   args->offset = v3d_bo_offset (v3d, bo);
   return 0;
@@ -468,6 +472,60 @@ fail:
   return ret;
 }
 
+int
+v3d_lookup_bo (struct v3d_dev *v3d, int f, uint32_t handle)
+{
+  return lookup_bo (v3d, f, handle);
+}
+
+void
+v3d_signal_syncobj (struct v3d_dev *v3d, int f, uint32_t handle)
+{
+  struct v3d_syncobj *s = lookup_syncobj (v3d, f, handle);
+  if (s)
+    {
+      s->has_fence = 1;
+      s->f.q = V3D_RENDER;
+      s->f.seq = 0;			/* nothing to wait for */
+    }
+}
+
+/* (0.31) PRESENT's jobs: a render job on the program's file, with BOs by
+   index (the program's source, PRESENT's list, screen and staging) */
+int
+v3d_submit_render (struct v3d_dev *v3d, int f, uint32_t start, uint32_t end,
+		   const uint16_t *bos, uint32_t n, uint32_t in_sync,
+		   uint32_t out_sync, struct v3d_fence *fence)
+{
+  if (n > V3D_JOB_FEW_BOS)
+    return -V3D_EINVAL;
+  struct v3d_job *job = new_job (v3d, f, V3D_RENDER);
+  if (!job)
+    return -V3D_ENOMEM;
+  job->a.cl.start = start;
+  job->a.cl.end = end;
+  job->bos = job->few;
+  for (uint32_t i = 0; i < n; i++)
+    {
+      v3d_bo_get (v3d, bos[i]);
+      v3d_bo_cpu_clean (v3d, bos[i]);
+      job->bos[job->nbos++] = bos[i];
+    }
+  add_syncobj_dep (v3d, f, job, in_sync);
+  implicit_deps (v3d, job);
+  unsigned s = plat_irq_off ();
+  v3d_push_job (v3d, job);
+  attach_fences (v3d, f, job, out_sync);
+  if (fence)
+    {
+      fence->q = V3D_RENDER;
+      fence->seq = job->seq;
+    }
+  v3d_pump (v3d);
+  plat_irq_restore (s);
+  return 0;
+}
+
 static int
 submit_tfu (struct v3d_dev *v3d, int f, struct drm_v3d_submit_tfu *args)
 {
@@ -691,6 +749,7 @@ union v3d_args
   struct drm_syncobj_array syncobj_array;
   struct drm_riscos_sync_file sync_file;
   struct drm_riscos_file_stats file_stats;
+  struct drm_riscos_present present;
   uint8_t bytes[160];
 };
 
@@ -752,6 +811,9 @@ v3d_ioctl (struct v3d_dev *v3d, int f, uint32_t request, void *arg)
       case 0x01: ret = sync_file (v3d, &a.sync_file, 0); break;
       case 0x02: ret = import_memory (v3d, f, &a.import_memory); break;
       case 0x03: ret = file_stats (v3d, f, &a.file_stats); break;
+      case 0x04:
+	ret = v3d_internal_file (v3d, f) ? -V3D_EINVAL : v3d_present (v3d, f, &a.present);
+	break;
       }
   /* (0.11) whatever the request, the file's cached and imported BOs that
      jobs have written are invalidated before it returns: a wait that saw
@@ -779,6 +841,7 @@ v3d_init (struct v3d_dev *v3d)
     }
   v3d->stats.first_hang.q = v3d->stats.last_hang.q = ~0u;	/* none yet */
   v3d->twod.file = -1;			/* (0.17) no 2D yet */
+  v3d->present.file = -1;		/* (0.31) no PRESENT yet */
   int ret = v3d_bo_init (v3d);
   if (ret)
     return ret;

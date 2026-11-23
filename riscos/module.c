@@ -41,7 +41,7 @@
 #include "plat_pi4.h"
 #include "twod.h"
 
-#define VERSION 28		/* 0.28 */
+#define VERSION 33		/* 0.33 */
 #define SWI_BASE 0x5AFC0
 #ifndef OS_SetVarVal
 #define OS_SetVarVal		0x24
@@ -78,6 +78,20 @@ static char log_path[200];
 static int no_irq, no_risc3d;			/* (0.27) NoIRQ, NoRISC3D */
 static volatile int first_irq, first_irq_due;
 static void log_text (const char *text);
+static char *put_str (char *b, char *end, const char *s);
+static char *put_dec (char *b, char *end, uint32_t v);
+/* (0.33) after start-up, each kind of event is logged the first time it
+   happens, so a machine that stops later in its boot (Chris Hughes's CM4)
+   shows how far it got; never in page-moving service calls */
+static uint32_t logged_once;
+static void
+log_once (uint32_t bit, const char *text)
+{
+  if (logged_once & bit)
+    return;
+  logged_once |= bit;
+  log_text (text);
+}
 static uint32_t div32 (uint32_t a, uint32_t b);
 
 /* (0.26) the driver's memory work that couldn't be done inside a
@@ -183,7 +197,7 @@ static void
 count_pages (uint32_t *high, uint32_t *low, uint32_t *big, uint32_t *super)
 {
   *high = *low = *big = *super = 0;
-  for (int bo = 1; bo < V3D_MAX_BOS; bo++)
+  for (int bo = 1; bo < (int) dev->nbos; bo++)
     {
       struct v3d_bo *b = &dev->bos[bo];
       if (!b->used || b->imported)
@@ -237,6 +251,42 @@ tdec (struct text *t, uint32_t v)
   tput (t, n + i);
 }
 
+/* (0.29) Z-layer complex overlays: BCMVideo makes VideoOverlay's
+   overlays Z-Order (in firmware layers behind the desktop, seen through
+   its alpha) when the desktop mode is 32bpp with alpha, and it offers
+   such modes only when config.txt has framebuffer_ignore_alpha=0.
+   0 not this kind of mode (not 32bpp RGB), 1 on, 2 off but an alpha
+   mode is available, 3 off: needs framebuffer_ignore_alpha=0 and a
+   restart. */
+#define OS_ReadModeVariable	0x35
+#define OS_CheckModeValid	0x3F
+#define MODEFLAG_ALPHA		0x8000
+#define MODEFLAG_FAMILY		0x3000
+
+static int
+overlay_state (void)
+{
+  uint32_t v[5];
+  static const unsigned vars[5] = { 9, 0, 11, 12, 3 };	/* Log2BPP, ModeFlags, X/YWindLimit, NColour */
+  for (int i = 0; i < 5; i++)
+    {
+      regs r = {{ 0xFFFFFFFF, vars[i] }};
+      if (swix_regs (OS_ReadModeVariable, &r))
+	return 0;
+      v[i] = r.r[2];
+    }
+  if (v[0] != 5 || (v[1] & MODEFLAG_FAMILY))
+    return 0;
+  if (v[1] & MODEFLAG_ALPHA)
+    return 1;
+  uint32_t sel[10] = { 1, v[2] + 1, v[3] + 1, 5, 0xFFFFFFFF,
+		       0, v[1] | MODEFLAG_ALPHA, 3, v[4], 0xFFFFFFFF };
+  regs c = {{ (unsigned) sel }};
+  if (swix_regs (OS_CheckModeValid, &c) || (int) c.r[0] < 0)
+    return 3;
+  return 2;
+}
+
 static void
 hardware_text (char *buf, uint32_t size, uint32_t *need)
 {
@@ -284,6 +334,21 @@ hardware_text (char *buf, uint32_t size, uint32_t *need)
   tput (&t, twod.mode == TWOD_OFF ? "off (*V3DRender 2D on)" : twod.mode == TWOD_ASYNC
 	? "on, not waited for" : "on: window moves, scrolls and fills on the GPU");
   tput (&t, "\n");
+  switch (overlay_state ())		/* (0.29) */
+    {
+    case 0:
+      tput (&t, "Z-layer complex overlays\toff: needs a 16 million colour desktop\n");
+      break;
+    case 1:
+      tput (&t, "Z-layer complex overlays\ton: video overlays behind the desktop, under its windows and menus\n");
+      break;
+    case 2:
+      tput (&t, "Z-layer complex overlays\toff: available in this mode's alpha form (C16M LABGR)\n");
+      break;
+    case 3:
+      tput (&t, "Z-layer complex overlays\toff: needs framebuffer_ignore_alpha=0 in config.txt and a restart\n");
+      break;
+    }
   if (size)
     *t.p = 0;
   *need = t.need + 1;
@@ -308,7 +373,9 @@ register_risc3d (void)
   /* flags: bit 0 a DRM device; (0.20) bit 3 answers reason 4, hardware */
   regs r = {{ 0, (unsigned) driver_entry, 0, (unsigned) "V3DRender (the Pi 4's GPU)",
 	      1 | 8 | 16, SWI_BASE + 3, (unsigned) "v3d" }};
+  log_once (1u << 0, "registering with RISC3D");
   registered = !swix_regs (risc3d_register, &r);
+  log_once (1u << 1, registered ? "registered with RISC3D" : "RISC3D refused the registration");
 }
 
 static void
@@ -324,6 +391,7 @@ deregister_risc3d (void)
 static oserror *
 file_open (unsigned *handle)
 {
+  log_once (1u << 6, "first program opening the GPU");
   v3d_service (dev);
   int f = v3d_open (dev, this_task ());
   if (f < 0)
@@ -345,7 +413,7 @@ file_close (int f)
 {
   v3d_close (dev, f);
   for (int i = 0; i < V3D_MAX_FILES; i++)
-    if (dev->files[i].used && i != dev->twod.file)
+    if (dev->files[i].used && !v3d_internal_file (dev, i))
       return;
   if (clock_raised && clock_before && v3d_idle (dev))
     {
@@ -368,7 +436,7 @@ recover (int all, int report)
       for (int f = 0; f < V3D_MAX_FILES; f++)
 	if (dev->files[f].used)
 	  {
-	    closed += f != dev->twod.file;
+	    closed += !v3d_internal_file (dev, f);
 	    file_close (f);
 	  }
       twod_files_closed ();		/* (0.17) its own file again */
@@ -418,6 +486,14 @@ desktop_2d (int mode)
 oserror *
 driver_call (regs *r)
 {
+  if (r->r[0] < 8)
+    {
+      char buf[48], *b = buf, *end = buf + sizeof buf - 1;
+      b = put_str (b, end, "RISC3D's first call, reason ");
+      b = put_dec (b, end, r->r[0]);
+      *b = 0;
+      log_once (1u << (8 + r->r[0]), buf);
+    }
   switch (r->r[0])
     {
     case 0:
@@ -519,7 +595,7 @@ mod_swi (unsigned number, regs *r)
 	pi4_clock (&hz, 0);
 	int n = 0;
 	for (int i = 0; i < V3D_MAX_FILES; i++)
-	  n += dev->files[i].used && i != dev->twod.file;
+	  n += dev->files[i].used && !v3d_internal_file (dev, i);
 	r->r[0] = VERSION;
 	r->r[1] = (unsigned) dev->ver;
 	r->r[2] = dev->ident[1];
@@ -588,6 +664,7 @@ mod_service (regs *r)
   switch (r->r[1])
     {
     case 0x53:				/* Service_WimpCloseDown: r2 = task */
+      log_once (1u << 2, "first Service_WimpCloseDown");
       for (int f = 0; f < V3D_MAX_FILES; f++)
 	if (dev->files[f].used && dev->files[f].owner && dev->files[f].owner == r->r[2])
 	  file_close (f);
@@ -612,10 +689,12 @@ mod_service (regs *r)
       in64 = 0;
       break;
     case 0x4D:				/* Service_PreModeChange (0.17) */
+      log_once (1u << 3, "first mode change starting");
       twod_mode_changing ();
       break;
     case 0x46:				/* Service_ModeChange */
       twod_mode_changed ();
+      log_once (1u << 4, "first mode change done");
       break;
     case 0xDA:				/* Service_ModulePostInit: r2 -> title */
       {
@@ -625,6 +704,7 @@ mod_service (regs *r)
 	  i++;
 	if (t && !want[i] && t[i] < ' ')
 	  {
+	    log_once (1u << 5, "RISC3D loaded (again): registering");
 	    registered = 0;			/* a new RISC3D knows nothing of us */
 	    register_risc3d ();
 	  }
@@ -853,11 +933,28 @@ init (const char *tail, void *pw)
      NoWFI). For diagnosis: NoIRQ (the interrupt isn't claimed; waits
      poll the GPU), NoRISC3D (not registered with RISC3D), LowMem (no
      pages asked for above 1 GB), Log <file> (or V3DRender$Log). */
+  /* (0.33) no options given: V3DRender$Options, so the diagnostic
+     options can be had when RISC3D's !Boot loads V3DRender at start-up
+     (Chris Hughes's CM4 fails only then) */
+  static char opt_var[128];
+  int any = 0;
+  for (const char *t = tail; t && *t >= ' '; t++)
+    any |= *t > ' ';
+  if (!any)
+    {
+      regs r = {{ (unsigned) "V3DRender$Options", (unsigned) opt_var, sizeof opt_var - 1, 0, 3 }};
+      if (!swix_regs (OS_ReadVarVal, &r) && r.r[2] < sizeof opt_var)
+	{
+	  opt_var[r.r[2]] = 0;
+	  tail = opt_var;
+	}
+    }
   pi4_no_wfi = 0;
   pi4_low_mem = 0;
   pi4_poll = 0;
   no_irq = no_risc3d = 0;
   first_irq = first_irq_due = 0;
+  logged_once = 0;
   log_path[0] = 0;
   pi4_area_mb = 0;
   twod_wanted = TWOD_OFF;
@@ -1247,7 +1344,7 @@ mod_command (int index, const char *tail, int argc)
 	{
 	  int open = 0;
 	  for (int i = 0; i < V3D_MAX_FILES; i++)
-	    open += dev->files[i].used && i != dev->twod.file;
+	    open += dev->files[i].used && !v3d_internal_file (dev, i);
 	  if (open || !v3d_idle (dev))
 	    {
 	      write0 ("The GPU is in use: close the programs using it first.");
@@ -1330,7 +1427,44 @@ mod_command (int index, const char *tail, int argc)
       write0 (")");
       newline ();
     }
-  line ("Buffer memory (KB):    ", dev->area_pages * 4);
+  write0 ("Buffer memory (KB):    ");
+  write_dec (dev->area_pages * 4);
+  if (dev->area_pages < pi4_area_mb * 256)	/* (0.30) */
+    {
+      write0 (" (asked for ");
+      write_dec (pi4_area_mb * 1024);
+      write0 (": RISC OS gave less)");
+    }
+  newline ();
+  /* (0.30) the BO table, and buffers refused */
+  write0 ("  buffers (BOs):       ");
+  {
+    uint32_t used = 0;
+    for (uint32_t b = 1; b < dev->nbos; b++)
+      used += dev->bos[b].used;
+    write_dec (used);
+    write0 (" of ");
+    write_dec (dev->nbos - 1);
+    write0 (" (grows to 65535)");
+  }
+  newline ();
+  if (dev->stats.bo_refused)
+    {
+      write0 ("  refused:             ");
+      write_dec (dev->stats.bo_refused);
+      write0 (" (no handle ");
+      write_dec (dev->stats.refused_handles);
+      write0 (", BO table full ");
+      write_dec (dev->stats.refused_table);
+      write0 (", no room in the area ");
+      write_dec (dev->stats.refused_space);
+      write0 (", no memory from RISC OS ");
+      write_dec (dev->stats.refused_memory);
+      write0 ("); the last was ");
+      write_dec (dev->stats.refused_last_bytes);
+      write0 (" bytes");
+      newline ();
+    }
   line ("  in use (KB):         ", dev->pages_used * 4);
   /* (0.25) freed BOs' pages kept for the next */
   write0 ("  kept for reuse (KB): ");
@@ -1358,7 +1492,7 @@ mod_command (int index, const char *tail, int argc)
   newline ();
   int n = 0;
   for (int i = 0; i < V3D_MAX_FILES; i++)
-    n += dev->files[i].used && i != dev->twod.file;
+    n += dev->files[i].used && !v3d_internal_file (dev, i);
   line ("Files open:            ", (unsigned) n);
   line ("Bin jobs:              ", s->jobs[V3D_BIN]);
   line ("Render jobs:           ", s->jobs[V3D_RENDER]);
@@ -1517,6 +1651,34 @@ mod_command (int index, const char *tail, int argc)
       write_dec ((uint32_t) (s->zero_ns / 1000u / s->bo_creates));
       write0 (")");
       newline ();
+    }
+  /* (0.31) DRM_IOCTL_RISCOS_PRESENT */
+  const struct v3d_present *pr = &dev->present;
+  if (pr->presents || pr->probes || pr->refused)
+    {
+      write0 ("Presents:              ");
+      write_dec (pr->presents);
+      write0 (" (");
+      write_dec (pr->rects);
+      write0 (" rectangles, ");
+      write_dec (pr->jobs);
+      write0 (" jobs, ");
+      write_dec (pr->untiled);
+      write0 (" UIF frames untiled); ");
+      write_dec (pr->probes);
+      write0 (" checks");
+      newline ();
+      if (pr->clipped_away)
+	line ("  rectangles off screen:", pr->clipped_away);
+      if (pr->refused)
+	{
+	  write0 ("  refused:            ");
+	  write_dec (pr->refused);
+	  write0 (" (last error ");
+	  write_dec (pr->last_error);
+	  write0 (")");
+	  newline ();
+	}
     }
   if (s->page_moves)
     {
