@@ -185,6 +185,14 @@ zeroed as before, so a new BO still starts all zeroes, as on Linux.
   `bo_creates, bo_from_pool, pages_reused, pages_claimed` (`__u32`) and
   `create_ns, zero_ns` (`__u64`) at the end.
 
+## Desktop 2D through RISC3D (0.28)
+
+V3DRender registers with RISC3D flags bit 4 and answers driver reason 5:
+r1 = -1 reads, 0 turns the desktop's 2D off, 1 on, 2 on without waiting;
+r0 returns the state now. It is the same code as `*V3DRender 2D off|on|async`.
+RISC3D's window uses it, and RISC3D calls it from a callback after
+registration with the saved `RISC3D$2D`.
+
 ## No memory calls inside GraphicsV (0.26)
 
 While V3DRender is handling a GraphicsV call (the desktop's copies and fills),

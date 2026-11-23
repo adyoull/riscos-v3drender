@@ -211,6 +211,40 @@ class Pi4(Machine):
             return
         if base == 0x1E and r[0] == 18:           # OS_Module lookup: nothing loaded
             return self._fail(number, 0x102, "Module '%s' not found" % self.cstr(r[1]))
+        if base == 0x0D:                          # (0.27) OS_Find
+            if not hasattr(self, "files"):
+                self.files, self.handles, self.ftypes = {}, {}, {}
+            if r[0] == 0:
+                self.handles.pop(r[1], None)
+                return
+            name = self.cstr(r[1])
+            if (r[0] & 0xC0) == 0x80:             # OpenOut: create
+                self.files[name] = b""
+            elif name not in self.files:
+                if r[0] & 8:
+                    return self._fail(number, 0xD6, "File '%s' not found" % name)
+                out(0, 0)
+                return
+            h = 50 + len(self.handles)
+            self.handles[h] = name
+            out(0, h)
+            return
+        if base == 0x09 and r[0] == 2:            # (0.27) OS_Args 2: extent
+            out(2, len(self.files[self.handles[r[1]]]))
+            return
+        if base == 0x0C and r[0] == 1:            # (0.27) OS_GBPB 1: write at
+            name = self.handles[r[1]]
+            data = self.files[name]
+            check(r[4] == len(data), "the log is appended to")
+            self.files[name] = data[:r[4]] + bytes(self.uc.mem_read(r[2], r[3]))
+            return
+        if base == 0x08 and r[0] == 18:           # (0.27) OS_File 18: set type
+            self.ftypes[self.cstr(r[1])] = r[2]
+            return
+        if base == 0x68 and (r[0] & 0xFF) == 8:   # (0.27) OS_Memory 8: DRAM
+            out(1, 2048 * 256)                    # 2 GB of 4 KB pages
+            out(2, 4096)
+            return
         if base == 0x68:                          # OS_Memory
             reason = r[0] & 0xFF
             if reason == 13:
@@ -462,13 +496,13 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 26 and out[8] != 0, "version 0.26, statistics in r8")
+    check(out[0] == 28 and out[8] != 0, "version 0.28, statistics in r8")
     check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
     # RISC3D: registered as a DRM device; its calls open, describe, close
     d = m.risc3d
-    check(d is not None and d["flags"] == 9 and d["ioctl"] == 0x5AFC3 and d["drm"] == "v3d"
+    check(d is not None and d["flags"] == 25 and d["ioctl"] == 0x5AFC3 and d["drm"] == "v3d"
           and "RISC3D_Register" in m.swi_lookups,
           "registered with RISC3D as a DRM device (%s)" % d)
     if d:
@@ -497,6 +531,27 @@ def main():
         cut = bytes(m.uc.mem_read(B, 21))
         check(not v and o[2] == need and cut[19] == 0 and cut[20] == 0xAA and cut[:19] == txt[:19],
               "reason 4 into 20 bytes: 19 and a 0, nothing past it")
+        # (0.28) reason 5: desktop 2D, the same as *V3DRender 2D
+        o, v, _ = m.call(d["entry"], {0: 5, 1: 0xFFFFFFFF, 12: d["r12"]})
+        check(not v and o[0] == 0, "(0.28) reason 5 reads: off")
+        o, v, _ = m.call(d["entry"], {0: 5, 1: 1, 12: d["r12"]})
+        claimed = getattr(m, "gfxv", None) is not None
+        o2, v2, _ = m.call(d["entry"], {0: 5, 1: 0xFFFFFFFF, 12: d["r12"]})
+        m.output = ""
+        mod.command("V3DRender")
+        check(not v and o[0] == 1 and not v2 and o2[0] == 1
+              and "Desktop copies (2D):   on" in m.output and "not waited" not in m.output.split("Desktop copies")[1].split("\n")[0],
+              "(0.28) reason 5 on: GraphicsV claimed, *V3DRender agrees")
+        o, v, _ = m.call(d["entry"], {0: 5, 1: 2, 12: d["r12"]})
+        m.output = ""
+        mod.command("V3DRender")
+        check(not v and o[0] == 2 and "not waited for" in m.output, "(0.28) reason 5 async")
+        err = mod.command("V3DRender", "2D off", 3)
+        o, v, _ = m.call(d["entry"], {0: 5, 1: 0xFFFFFFFF, 12: d["r12"]})
+        check(err is None and not v and o[0] == 0, "(0.28) *V3DRender 2D off: reason 5 reads off")
+        o, v, _ = m.call(d["entry"], {0: 5, 1: 7, 12: d["r12"]})
+        o2, v2, _ = m.call(d["entry"], {0: 5, 1: 0xFFFFFFFF, 12: d["r12"]})
+        check(v and not v2 and o2[0] == 0, "(0.28) reason 5 with an unknown state: an error, nothing changed")
         o, v, _ = m.call(d["entry"], {0: 2, 1: rf, 12: d["r12"]})
         check(v, "RISC3D sync refused (no command stream)")
         o, v, _ = m.call(d["entry"], {0: 1, 1: rf, 12: d["r12"]})
@@ -1232,12 +1287,112 @@ def test_start_fails_part_way(data):
     check(err is not None and steps[-1:] == ["5 memory"], "fails at step 5: %s (%s)" % (steps[-1:], err))
     check(getattr(m, "vector", None) is None and not m.areas, "nothing left claimed")
 
+def test_027_log_and_options(data):
+    """(0.27) the start-up log and the diagnostic load options"""
+    # every step in the log, appended, as text
+    m = Pi4()
+    mod = Module(m, data, 0x20010000)
+    err = initialise(mod, "NoWFI Log $.V3DLog")
+    log = m.files.get("$.V3DLog", b"").decode("latin-1")
+    lines = [l.split(": ", 1)[1] for l in log.splitlines()]
+    want = ["1 checks", "2 map", "3 power", "4 probe", "5 memory", "6 init",
+            "7 interrupt", "8 RISC3D", "ready"]
+    check(err is None and [l for l in lines if l in want] == want,
+          "(0.27) every step in the log: %s" % lines)
+    check(any(l.startswith("options: NoWFI Size 256 MB; 2048 MB of RAM") for l in lines),
+          "(0.27) the options and RAM in the log")
+    check(any(l.startswith("HAL_IRQClear at &") for l in lines), "(0.27) HAL_IRQClear's address")
+    check(m.ftypes.get("$.V3DLog") == 0xFFF and log.splitlines()[0].split(" cs  ")[1].startswith("V3DRender 0.28: "),
+          "(0.27) a text file, each line timed and versioned")
+    # the first interrupt, noted from a callback
+    m.finish(R["INT_FRDONE"])
+    run_callbacks(m)
+    m.finish(R["INT_FRDONE"])
+    run_callbacks(m)
+    log = m.files["$.V3DLog"].decode("latin-1")
+    check(log.count("first GPU interrupt") == 1, "(0.27) the first interrupt noted, once")
+    n = len(log.splitlines())
+    mod.finalise(0)
+    log = m.files["$.V3DLog"].decode("latin-1")
+    check(len(log.splitlines()) == n + 1 and log.splitlines()[-1].endswith(": final"),
+          "(0.27) final noted, appended")
+
+    # V3DRender$Log; a start-up that fails says why
+    m = Pi4()
+    m.pmp_fail = True
+    m.vars = {"V3DRender$Log": "RAM::RamDisc0.$.Log"}
+    mod = Module(m, data, 0x20010000)
+    err = initialise(mod, "NoWFI")
+    lines = [l.split(": ", 1)[1] for l in m.files.get("RAM::RamDisc0.$.Log", b"").decode("latin-1").splitlines()]
+    check(err is not None and lines[-3] == "5 memory" and lines[-2].startswith("failed: &")
+          and lines[-1] == "final (fatal)",
+          "(0.27) the failure and its error in the log: %s" % lines[-3:])
+
+    # no log asked for: no file
+    m = Pi4()
+    mod = Module(m, data, 0x20010000)
+    check(initialise(mod, "NoWFI") is None and not getattr(m, "files", {}),
+          "(0.27) no log unless asked for")
+    mod.finalise(0)
+
+    # NoIRQ: no vector, no HAL_IRQEnable; jobs still finish, by polling
+    m = Pi4()
+    mod = Module(m, data, 0x20010000)
+    err = initialise(mod, "NoIRQ NoRISC3D NoWFI")
+    steps = [v for n, v in getattr(m, "var_log", []) if n == "V3DRender$Step"]
+    check(err is None and m.vector is None and steps[-1] == "ready"
+          and "7 interrupt not claimed (NoIRQ): waits poll the GPU" in steps
+          and "8 not registered with RISC3D (NoRISC3D)" in steps,
+          "(0.27) NoIRQ and NoRISC3D: %s" % steps)
+    check(not getattr(m, "risc3d", None), "(0.27) NoRISC3D: RISC3D not called")
+    out, e = mod.swi(1, {0: 0})
+    f = out[0]
+    A = SCRATCH + 0xB000
+    def io(req, payload):
+        m.uc.mem_write(A, payload)
+        o, e2 = mod.swi(3, {0: f, 1: req, 2: A})
+        res = o[0] - (1 << 32) if o[0] & 0x80000000 else o[0]
+        return res, bytes(m.uc.mem_read(A, len(payload)))
+    ret, b = io(R["IOCTL_CREATE_BO"], struct.pack("<IIII", 4096, 0, 0, 0))
+    _, _, h, _ = struct.unpack("<IIII", b)
+    m.uc.mem_write(A + 0x100, struct.pack("<I", h))
+    cl = struct.pack("<9I4xQ4IQ", 0x1000, 0x1040, 0x2000, 0x2040, 0, 0, 0,
+                     0x3000, 0x8000, A + 0x100, 1, 0, 0, 0, 0)
+    ret2, _ = io(R["IOCTL_SUBMIT_CL"], cl)
+    busy, _ = io(R["IOCTL_WAIT_BO"], struct.pack("<IIQ", h, 0, 0))
+    m.core[R["CTL_INT_STS"]] = m.core.get(R["CTL_INT_STS"], 0) | R["INT_FLDONE"]   # no interrupt
+    io(R["IOCTL_WAIT_BO"], struct.pack("<IIQ", h, 0, 0))
+    m.core[R["CTL_INT_STS"]] = m.core.get(R["CTL_INT_STS"], 0) | R["INT_FRDONE"]
+    done, _ = io(R["IOCTL_WAIT_BO"], struct.pack("<IIQ", h, 0, 0))
+    check(ret == 0 and ret2 == 0 and busy != 0 and done == 0,
+          "(0.27) NoIRQ: the job finishes by polling (%d %d %d %d)" % (ret, ret2, busy, done))
+    mod.swi(2, {0: f})
+    mod.finalise(0)
+
+    # LowMem: nothing asked for above 1 GB
+    m = Pi4()
+    mod = Module(m, data, 0x20010000)
+    check(initialise(mod, "LowMem NoWFI") is None
+          and not [x for x in m.mem12 if x[0] & (1 << 9)],
+          "(0.27) LowMem: no OS_Memory 12 range above 1 GB")
+    mod.finalise(0)
+
+    # whole words: "NoIRQ" alone isn't NoWFI any more
+    m = Pi4()
+    mod = Module(m, data, 0x20010000)
+    initialise(mod, "NoIRQ")
+    m.output = ""
+    mod.command("V3DRender")
+    check("wfi" not in m.output.lower() or "NoWFI" not in m.output, "(0.27) options are whole words")
+    mod.finalise(0)
+
 
 try:
     main()
     test_2d(open(sys.argv[1], "rb").read())
     test_start_fails_part_way(open(sys.argv[1], "rb").read())
     test_domain_first(open(sys.argv[1], "rb").read())
+    test_027_log_and_options(open(sys.argv[1], "rb").read())
 except (EmuError, UcError) as e:
     failures += 1
     print("FAIL:", e)

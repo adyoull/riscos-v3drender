@@ -23,15 +23,25 @@
    program's Mesa (its v3d driver, through libdrm) sends the work
    straight to V3DRender_Ioctl, without RISC3D's command stream.
 
+   The interrupt handling follows Rob Heaton's V3DDriver
+   (github.com/robheaton/riscos-v3d, GPL-2.0-or-later, v3d_irq.c):
+   device 10 claimed with the module's private word as r12, and
+   HAL_IRQClear found once with OS_Hardware 1 and called directly from
+   the handler with its static base, not as a SWI; so does the refusal
+   to load beside V3DDriver. (0.26) Keeping RISC OS memory calls out of
+   GraphicsV (v3d_later, callback_c) follows a finding in his
+   development log: they froze V3DDriver with the Task Manager open.
+
    SPDX-License-Identifier: GPL-2.0-or-later
-   Copyright (c) 2026 Andrew Youll */
+   Copyright (c) 2026 Andrew Youll; the work it follows (C) 2026 Rob
+   Heaton */
 #include "cmodule.h"
 #include "v3d.h"
 #include "v3d_regs.h"
 #include "plat_pi4.h"
 #include "twod.h"
 
-#define VERSION 26		/* 0.26 */
+#define VERSION 28		/* 0.28 */
 #define SWI_BASE 0x5AFC0
 #ifndef OS_SetVarVal
 #define OS_SetVarVal		0x24
@@ -42,6 +52,13 @@
 #define OS_RemoveCallBack	0x5F
 #define Wimp_ReadSysInfo	0x400F2
 #define OS_SWINumberFromString	0x39
+#define OS_Args			0x09
+#define OS_GBPB			0x0C
+#define OS_Find			0x0D
+#define OS_ReadMonotonicTime	0x42
+#ifndef OS_Memory
+#define OS_Memory		0x68
+#endif
 #define IRQ_DEVICE 10				/* iDev_GPU_VC3D */
 #define HAL_IRQEnable 1
 #define HAL_IRQDisable 2
@@ -56,6 +73,12 @@ static struct v3d_dev *dev;
 static int inited;			/* (0.24) v3d_init succeeded */
 static int twod_wanted;			/* (0.17) 2D at load: TWOD_* */
 static void *private_word;
+/* (0.27) the start-up log and the diagnostic load options */
+static char log_path[200];
+static int no_irq, no_risc3d;			/* (0.27) NoIRQ, NoRISC3D */
+static volatile int first_irq, first_irq_due;
+static void log_text (const char *text);
+static uint32_t div32 (uint32_t a, uint32_t b);
 
 /* (0.26) the driver's memory work that couldn't be done inside a
    GraphicsV call (v3d->page_work_due), done from a transient callback,
@@ -67,6 +90,11 @@ void
 callback_c (void)
 {
   callback_pending = 0;
+  if (first_irq_due)
+    {
+      first_irq_due = 0;
+      log_text ("first GPU interrupt");		/* (0.27) */
+    }
   if (dev && inited && !dev->no_page_ops)
     v3d_service (dev);
 }
@@ -93,6 +121,8 @@ ERROR_BLOCK (err_nogpu, 0x823E03, "The GPU didn't answer as a V3D 4.2");
 ERROR_BLOCK (err_files, 0x823E04, "Too many V3DRender files are open");
 ERROR_BLOCK (err_mem, 0x823E05, "Not enough memory for V3DRender");
 ERROR_BLOCK (err_syntax, 0x823E0B, "Syntax: *V3DRender [2D on|async|off]");
+ERROR_BLOCK (err_2d, 0x823E0C, "V3DRender couldn't start the desktop's 2D on the GPU");
+ERROR_BLOCK (err_2dmode, 0x823E0D, "RISC3D asked for a desktop 2D state V3DRender doesn't know");
 ERROR_BLOCK (err_sync, 0x823E06, "V3DRender takes its work through V3DRender_Ioctl, not RISC3D_Sync");
 
 static unsigned
@@ -114,6 +144,15 @@ hal (unsigned entry)
 void
 irq_c (void)
 {
+  if (!first_irq && log_path[0])
+    {
+      /* (0.27) noted in the log, from a callback (no files in here) */
+      first_irq = 1;
+      first_irq_due = 1;
+      regs r = {{ (unsigned) callback_entry, (unsigned) private_word }};
+      if (!swix_regs (OS_AddCallBack, &r))
+	callback_pending = 1;
+    }
   if (dev && inited)
     v3d_irq (dev);
   if (hal_irqclear)
@@ -268,7 +307,7 @@ register_risc3d (void)
   risc3d_register = n.r[0];
   /* flags: bit 0 a DRM device; (0.20) bit 3 answers reason 4, hardware */
   regs r = {{ 0, (unsigned) driver_entry, 0, (unsigned) "V3DRender (the Pi 4's GPU)",
-	      1 | 8, SWI_BASE + 3, (unsigned) "v3d" }};
+	      1 | 8 | 16, SWI_BASE + 3, (unsigned) "v3d" }};
   registered = !swix_regs (risc3d_register, &r);
 }
 
@@ -357,7 +396,25 @@ recover (int all, int report)
    2 sync: not for this kind of driver; 3 describe (RISC3D 0.03, asked
    only of drivers registered with flags bit 1): r0 = 0, on a GPU;
    4 hardware (0.20; RISC3D 0.09, flags bit 3): r1 -> buffer, r2 = size
-   -> r2 = size needed, the text ended with a 0 */
+   -> r2 = size needed, the text ended with a 0;
+   5 desktop 2D (0.28; RISC3D 0.10, flags bit 4): r1 = -1 read, 0 off,
+   1 on, 2 not waited for -> r0 = the state now (as *V3DRender 2D) */
+/* (0.28) The desktop's 2D on the GPU off, on or not waited for: one
+   path for *V3DRender 2D off|on|async and RISC3D's reason 5, so they
+   always agree. An error if it was asked for and didn't start. */
+static oserror *
+desktop_2d (int mode)
+{
+  if (mode == twod.mode && mode != TWOD_OFF)
+    return 0;				/* (off again releases GraphicsV after a stop) */
+  if (mode != TWOD_OFF && twod.mode != TWOD_OFF)
+    twod_set (TWOD_OFF);		/* (from on to async, or back) */
+  oserror *e = twod_set (mode);
+  if (!e && twod.mode != mode)
+    e = ERR (err_2d);
+  return e;
+}
+
 oserror *
 driver_call (regs *r)
 {
@@ -387,6 +444,15 @@ driver_call (regs *r)
 	hardware_text ((char *) r->r[1], r->r[2], &need);
 	r->r[2] = need;
 	return 0;
+      }
+    case 5:				/* (0.28) desktop 2D (RISC3D 0.10, flags bit 4) */
+      {
+	int want = (int) r->r[1];
+	if (want < -1 || want > TWOD_ASYNC)
+	  return ERR (err_2dmode);
+	oserror *e = want < 0 ? 0 : desktop_2d (want);
+	r->r[0] = (unsigned) twod.mode;
+	return e;
       }
     }
   return ERR (err_sync);
@@ -475,6 +541,12 @@ mod_swi (unsigned number, regs *r)
     case 3:
       if (!v3d_file_valid (dev, f))
 	return ERR (err_file);
+      if (pi4_poll)
+	{
+	  unsigned p = plat_irq_off ();	/* (0.27) NoIRQ: what finished */
+	  v3d_irq (pi4_poll);
+	  plat_irq_restore (p);
+	}
       r->r[0] = (unsigned) v3d_ioctl (dev, f, r->r[1], (void *) r->r[2]);
       return 0;
     case 4:
@@ -571,20 +643,105 @@ module_present (const char *name)
 /* (0.24) How far start-up got, in V3DRender$Step: if a machine stops
    during start-up (a CM4 at boot), *Show V3DRender$Step afterwards says
    which step it was. Ends as "ready". */
+/* (0.27) Each step is also added to a text file, if `Log <file>` was a
+   load option or V3DRender$Log names one: opened, written and closed
+   each time, so the last line is there after a crash and a restart
+   without !RISC3D. Every start-up adds to it. */
+
+static uint32_t
+str_len (const char *s)
+{
+  uint32_t n = 0;
+  while (s[n])
+    n++;
+  return n;
+}
+
+static char *
+put_str (char *b, char *end, const char *s)
+{
+  while (*s && b < end)
+    *b++ = *s++;
+  return b;
+}
+
+static char *
+put_hex (char *b, char *end, uint32_t v)
+{
+  b = put_str (b, end, "&");
+  for (int i = 28; i >= 0 && b < end; i -= 4)
+    *b++ = "0123456789ABCDEF"[(v >> i) & 15];
+  return b;
+}
+
+static char *
+put_dec (char *b, char *end, uint32_t v)
+{
+  char t[12];
+  int n = 0;
+  do
+    {
+      uint32_t q = div32 (v, 10);
+      t[n++] = (char) ('0' + (v - q * 10));
+      v = q;
+    }
+  while (v && n < 11);
+  while (n && b < end)
+    *b++ = t[--n];
+  return b;
+}
+
+static void
+log_text (const char *text)
+{
+  if (!log_path[0])
+    return;
+  char buf[240], *b = buf, *end = buf + sizeof buf - 1;
+  regs t = {{ 0 }};
+  swix_regs (OS_ReadMonotonicTime, &t);
+  b = put_dec (b, end, t.r[0]);
+  b = put_str (b, end, " cs  V3DRender 0.");
+  b = put_dec (b, end, VERSION);
+  b = put_str (b, end, ": ");
+  b = put_str (b, end, text);
+  *b++ = 10;
+  int created = 0;
+  regs o = {{ 0xC0 | 8 | 3, (unsigned) log_path }};	/* OpenUp, must exist, no path */
+  if (swix_regs (OS_Find, &o) || !o.r[0])
+    {
+      o.r[0] = 0x80 | 3;				/* OpenOut */
+      o.r[1] = (unsigned) log_path;
+      if (swix_regs (OS_Find, &o) || !o.r[0])
+	return;
+      created = 1;
+    }
+  unsigned h = o.r[0];
+  regs x = {{ 2, h }};				/* OS_Args 2: its extent */
+  swix_regs (OS_Args, &x);
+  regs w = {{ 1, h, (unsigned) buf, (unsigned) (b - buf), x.r[2] }};
+  swix_regs (OS_GBPB, &w);
+  regs c = {{ 0, h }};
+  swix_regs (OS_Find, &c);
+  if (created)
+    {
+      regs f = {{ 18, (unsigned) log_path, 0xFFF }};	/* Text */
+      swix_regs (OS_File, &f);
+    }
+}
+
 static void
 step (const char *what)
 {
-  const char *e = what;
-  while (*e)
-    e++;
-  regs r = {{ (unsigned) "V3DRender$Step", (unsigned) what, (unsigned) (e - what), 0, 0 }};
+  regs r = {{ (unsigned) "V3DRender$Step", (unsigned) what, str_len (what), 0, 0 }};
   swix_regs (OS_SetVarVal, &r);
+  log_text (what);
 }
 
 oserror *
 mod_final (int fatal)
 {
-  (void) fatal;
+  log_text (fatal ? "final (fatal)" : "final");	/* (0.27) */
+  pi4_poll = 0;
   deregister_risc3d ();
   twod_final ();			/* (0.17) GraphicsV released first */
   if (callback_pending)
@@ -643,15 +800,65 @@ div32 (uint32_t a, uint32_t b)
   return q;
 }
 
+/* (0.27) t starts with the word w (any case), followed by a space, an
+   = or the end */
+static int
+word_is (const char *t, const char *w)
+{
+  while (*w)
+    if ((*t++ | 32) != *w++)
+      return 0;
+  return *t <= ' ' || *t == '=';
+}
+
+static oserror *init (const char *tail, void *pw);
+
+/* (0.27) why start-up failed, in the log (once) */
+static int failure_logged;
+
+static void
+log_failure (oserror *e)
+{
+  if (failure_logged)
+    return;
+  failure_logged = 1;
+  char buf[200], *b = buf, *end = buf + sizeof buf - 1;
+  b = put_str (b, end, "failed: ");
+  b = put_hex (b, end, e->errnum);
+  b = put_str (b, end, " ");
+  b = put_str (b, end, e->errmess);
+  *b = 0;
+  log_text (buf);
+}
+
 oserror *
 mod_init (const char *tail, int instance, void *pw)
 {
   (void) instance;
   private_word = pw;
+  failure_logged = 0;
+  oserror *e = init (tail, pw);
+  if (e)
+    log_failure (e);
+  return e;
+}
+
+static oserror *
+init (const char *tail, void *pw)
+{
   while (tail && *tail == ' ')
     tail++;
-  /* load options (0.09): NoWFI, Size <MB>; else V3DRender$Size (MB) */
+  /* load options (0.09): NoWFI, Size <MB>; else V3DRender$Size (MB).
+     (0.27) Whole words now (0.09-0.26 took any word starting "no" as
+     NoWFI). For diagnosis: NoIRQ (the interrupt isn't claimed; waits
+     poll the GPU), NoRISC3D (not registered with RISC3D), LowMem (no
+     pages asked for above 1 GB), Log <file> (or V3DRender$Log). */
   pi4_no_wfi = 0;
+  pi4_low_mem = 0;
+  pi4_poll = 0;
+  no_irq = no_risc3d = 0;
+  first_irq = first_irq_due = 0;
+  log_path[0] = 0;
   pi4_area_mb = 0;
   twod_wanted = TWOD_OFF;
   for (const char *t = tail; t && *t >= ' ';)
@@ -660,10 +867,29 @@ mod_init (const char *tail, int instance, void *pw)
 	t++;
       if (*t == '-')
 	t++;
-      if ((t[0] | 32) == 'n' && (t[1] | 32) == 'o')
+      if (word_is (t, "nowfi"))
 	pi4_no_wfi = 1;
+      else if (word_is (t, "noirq"))
+	no_irq = 1;
+      else if (word_is (t, "norisc3d"))
+	no_risc3d = 1;
+      else if (word_is (t, "lowmem"))
+	pi4_low_mem = 1;
       else if (t[0] == '2' && (t[1] | 32) == 'd')
 	twod_wanted = (t[2] | 32) == 'a' || (t[3] | 32) == 'a' ? TWOD_ASYNC : TWOD_ON;
+      else if (word_is (t, "log") || ((t[0] | 32) == 'l' && (t[1] | 32) == 'o' && (t[2] | 32) == 'g' && t[3] == '='))
+	{
+	  t += 3;
+	  while (*t == ' ' || *t == '=')
+	    t++;
+	  uint32_t n = 0;
+	  while (t[n] > ' ' && n < sizeof log_path - 1)
+	    {
+	      log_path[n] = t[n];
+	      n++;
+	    }
+	  log_path[n] = 0;
+	}
       else if ((t[0] | 32) == 's' && (t[1] | 32) == 'i' && (t[2] | 32) == 'z' && (t[3] | 32) == 'e')
 	{
 	  t += 4;
@@ -673,6 +899,14 @@ mod_init (const char *tail, int instance, void *pw)
 	}
       while (*t > ' ')
 	t++;
+    }
+  if (!log_path[0])
+    {
+      regs r = {{ (unsigned) "V3DRender$Log", (unsigned) log_path, sizeof log_path - 1, 0, 3 }};
+      if (!swix_regs (OS_ReadVarVal, &r))
+	log_path[r.r[2] < sizeof log_path ? r.r[2] : sizeof log_path - 1] = 0;
+      else
+	log_path[0] = 0;
     }
   if (!pi4_area_mb)
     {
@@ -704,6 +938,26 @@ mod_init (const char *tail, int instance, void *pw)
     pi4_area_mb = 2048;
 
   step ("1 checks");
+  if (log_path[0])
+    {
+      char buf[200], *b = buf, *end = buf + sizeof buf - 1;
+      b = put_str (b, end, "options:");
+      if (pi4_no_wfi) b = put_str (b, end, " NoWFI");
+      if (no_irq) b = put_str (b, end, " NoIRQ");
+      if (no_risc3d) b = put_str (b, end, " NoRISC3D");
+      if (pi4_low_mem) b = put_str (b, end, " LowMem");
+      b = put_str (b, end, " Size ");
+      b = put_dec (b, end, pi4_area_mb);
+      b = put_str (b, end, " MB; ");
+      regs m = {{ 8 | 1 << 8 }};		/* OS_Memory 8: DRAM pages */
+      if (!swix_regs (OS_Memory, &m))
+	{
+	  b = put_dec (b, end, m.r[1] >> 8);
+	  b = put_str (b, end, " MB of RAM");
+	}
+      *b = 0;
+      log_text (buf);
+    }
   if (module_present ("V3DDriver"))
     return ERR (err_v3ddriver);
   if (pi4_soc () != 3)
@@ -741,6 +995,12 @@ mod_init (const char *tail, int instance, void *pw)
     }
   inited = 1;
 
+  if (no_irq)
+    {
+      step ("7 interrupt not claimed (NoIRQ): waits poll the GPU");
+      pi4_poll = dev;
+      goto risc3d;
+    }
   step ("7 interrupt");
   regs h = {{ 0, 0, 0, 0, 0, 0, 0, 0, 1, HAL_IRQClear }};	/* OS_Hardware 1 */
   e = swix_regs (OS_Hardware, &h);
@@ -753,6 +1013,16 @@ mod_init (const char *tail, int instance, void *pw)
     }
   hal_irqclear = (void *) h.r[0];
   hal_sb = h.r[1];
+  if (log_path[0])
+    {
+      char buf[80], *b = buf, *end = buf + sizeof buf - 1;
+      b = put_str (b, end, "HAL_IRQClear at ");
+      b = put_hex (b, end, h.r[0]);
+      b = put_str (b, end, ", static base ");
+      b = put_hex (b, end, h.r[1]);
+      *b = 0;
+      log_text (buf);
+    }
   regs c = {{ IRQ_DEVICE, (unsigned) irq_entry, (unsigned) pw }};
   e = swix_regs (OS_ClaimDeviceVector, &c);
   if (e)
@@ -762,8 +1032,14 @@ mod_init (const char *tail, int instance, void *pw)
   if (e)
     goto fail;
 
-  step ("8 RISC3D");
-  register_risc3d ();
+risc3d:
+  if (no_risc3d)
+    step ("8 not registered with RISC3D (NoRISC3D)");
+  else
+    {
+      step ("8 RISC3D");
+      register_risc3d ();
+    }
   twod_init (dev, pw);
   if (twod_wanted != TWOD_OFF)
     twod_set (twod_wanted);		/* (0.17) the desktop's copies */
@@ -771,6 +1047,7 @@ mod_init (const char *tail, int instance, void *pw)
   return 0;
 
 fail:
+  log_failure (e);
   mod_final (1);
   return e;
 }
@@ -941,9 +1218,7 @@ mod_command (int index, const char *tail, int argc)
 	: (tail[0] | 32) == 'o' && (tail[1] | 32) == 'f' ? TWOD_OFF : -1;
       if (mode < 0)
 	return ERR (err_syntax);
-      if (mode != TWOD_OFF && twod.mode != TWOD_OFF)
-	twod_set (TWOD_OFF);		/* (from on to async, or back) */
-      return twod_set (mode);
+      return desktop_2d (mode);		/* (0.28) as RISC3D's reason 5 */
     }
   if (index == 2)
     {

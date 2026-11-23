@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.28: desktop 2D switched from Configure's RISC3D window (23 November 2026)
+
+From RISC3D, at the owner's request: turn the desktop's 2D on and off in Configure's RISC3D window rather than with a command (RISC3D 0.10, !RISC3DSetup 1.07, DRIVER-GUIDE "Desktop 2D").
+
+- **Registers with flags bit 4** (`1 | 8 | 16`): "can do the desktop's 2D on the GPU and switch it while running". RISC3D 0.09 and older ignore the bit.
+- **Driver reason 5, desktop 2D:**
+  - In: r1 = -1 to read, 0 off, 1 on, 2 on without waiting.
+  - Out: r0 = the state now (0, 1 or 2).
+  - On failure, V set with an error: &823E0C if 2D was asked for and didn't start; &823E0D for a state it doesn't know, which changes nothing.
+  - RISC3D calls it from RISC3D_Desktop2D in the window's task, and from a transient callback after V3DRender registers, with the saved `RISC3D$2D`.
+- **One path:** `*V3DRender 2D off|on|async` and reason 5 now share `desktop_2d`, so `*V3DRender` and the window always agree.
+  - `*V3DRender 2D on` (or `async`) now gives an error if 2D couldn't be started. Before, it silently stayed off.
+  - Asking for the state already in force does nothing, except that `off` always releases GraphicsV, as after a GPU failure.
+- `V3DRender$2D` and the `2D`/`2DAsync` load options are unchanged. A saved `RISC3D$2D` arrives later, so it wins.
+- **Tests:** emulator 77472: registration flags 25; reason 5 reads off; on and async are claimed and agree with `*V3DRender`; `*V3DRender 2D off` is read back as off by reason 5; an unknown state gives an error and changes nothing; off after a GPU stop releases GraphicsV. Host 2129 (unchanged).
+- **Kit 31:** as kit 30, needing 0.28.
+
+## 0.27: a start-up log that survives a crash; diagnostic load options (23 November 2026)
+
+From RISC3D: Chris Hughes's CM4 (R-Comp Ne.X.T) still gives "Internal error, trap while in trap handler: abort on instruction fetch at &00000000" at start-up with V3DRender 0.24. The earlier test build gave the same. RISC3D asked for a log that survives the crash and an option to skip the interrupt.
+
+- **`Log <file>`, or `V3DRender$Log`:**
+  - Each start-up step goes into the file as it begins: 1 checks, 2 map, 3 power, 4 probe, 5 memory, 6 init, 7 interrupt, 8 RISC3D, ready.
+  - The file is opened, written and closed for each line, so it is complete up to the moment of a crash, and can be read after restarting without !RISC3D.
+  - Each line has the monotonic time and the version. The file is created as Text and added to at every start-up.
+  - It also records the load options and the RAM (OS_Memory 8), HAL_IRQClear's address and static base, and a failure's error number and text, before the clean-up. It records the first GPU interrupt, from a callback, since files can't be touched in the handler, and "final" when the module is killed.
+- **`NoIRQ`:** the device vector isn't claimed and HAL_IRQEnable isn't called. Waits, and every V3DRender_Ioctl, poll the GPU's interrupt status instead, so programs still work. This separates an interrupt problem from a power or memory one.
+- **`NoRISC3D`:** V3DRender doesn't register with RISC3D.
+- **`LowMem`:** no OS_Memory 12 requests for pages above 1 GB; buffers and the page table come from anywhere.
+- **Options are whole words.** 0.09-0.26 took any word starting "no" as NoWFI.
+- **Tests:** emulator 77366:
+  - every step, the options and RAM, and HAL_IRQClear in a Text file, appended;
+  - the first interrupt noted once, and "final";
+  - `V3DRender$Log`; a start-up failing at step 5 logs its error before the clean-up's "final (fatal)";
+  - no file unless asked for;
+  - NoIRQ: no vector, and a job that finishes with no interrupt is seen by polling;
+  - NoRISC3D: RISC3D not called;
+  - LowMem: no range request above 1 GB.
+  - Host 2129 (unchanged).
+- **Kit 30:** as kit 29, needing 0.27.
+
 ## 0.26: no memory calls inside GraphicsV; GFXH-1897 (22 November 2026)
 
 From Rob Heaton's V3DDriver development log, read against V3DRender.
@@ -27,6 +68,8 @@ From Rob Heaton's V3DDriver development log, read against V3DRender.
   - Host 2129: inside GraphicsV a close past the limit keeps its pages; a BO needing claims is refused with nothing claimed or released, while one that fits kept pages is made; an import goes clear of kept pages; the overflow memory isn't topped up and trimming waits; outside, it is all done; the last program closing inside leaves its pages until outside. Also a simulated pending L2T flush that the clean must wait for. Removing either fix fails the tests.
   - Emulator 54154: a closed program's finished job, released by the desktop's next fill, makes no OS_DynamicArea call during the fill. One callback is asked for, not repeated while pending; it preserves every register and gives the pages back. Without the GraphicsV guard, 4 checks fail.
 - **Kit 29:** as kit 28, needing 0.26.
+- **Release notes** (`release-notes/v0.26.md`, after the tag; the module is unchanged): everything since 0.16, the last published release, with the owner's RISCOSmark results (Rectangle Copy 519 with 2D off, 3,679 with it on, at 1920x1200). The README's status is brought up to 0.26.
+- **Credit to Rob Heaton** (after the tag; the module builds byte-for-byte the same): `riscos/module.c`'s header now says its interrupt handling (device 10 with the private word, HAL_IRQClear called directly) and the refusal to load beside V3DDriver follow V3DDriver, and that 0.26's GraphicsV rule comes from his log. NOTICE item 3 says the same. The other files taken from his work already said so: `riscos/plat_pi4.c`, `core/v3d_2d.c` and `riscos/twod.c`.
 
 ## 0.25: freed GPU memory kept for the next buffer (22 November 2026)
 

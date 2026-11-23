@@ -499,9 +499,13 @@ pmp_pa (struct pmp *a, uint32_t page)
 #define HIGH_FROM	0x40000000u
 #define HIGH_MIN_RUN	16u			/* 64 KB: smaller isn't worth a search */
 
+int pi4_low_mem;			/* (0.27) LowMem: never ask for pages above 1 GB */
+
 static uint32_t
 high_run (uint32_t pages, uint32_t align_log2)
 {
+  if (pi4_low_mem)
+    return DA_RELEASE;
   regs r = {{ 12u | 1u << 9, pages << 12, align_log2, 0,
 	      HIGH_FROM, 0, 0xFFFFFFFFu, 0 }};
   if (swix_regs (OS_Memory, &r))
@@ -786,9 +790,20 @@ pi4_pt_pa (void)
 {
   return pi4.pt.area ? pmp_pa (&pi4.pt, 0) : 0;
 }
+/* (0.27) NoIRQ: the GPU's interrupt isn't claimed, so waits poll its
+   status instead */
+struct v3d_dev *pi4_poll;
+
 void
 plat_wait (void)
 {
+  if (pi4_poll)
+    {
+      unsigned p = plat_irq_off ();
+      v3d_irq (pi4_poll);
+      plat_irq_restore (p);
+      return;
+    }
   unsigned s = plat_irq_off ();
   __asm__ volatile ("cpsie i" ::: "memory");
   if (!pi4_no_wfi)
