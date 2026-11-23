@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.32: PRESENT's red and blue in 64K-colour modes (23 November 2026)
+
+From MESA's first Pi test of 0.31 (riscos-mesa `tests/presenttest.c`, owner's Pi 4):
+- **What worked:** 16M colours and 32K colours were right. The menu stayed on top. The rate was 565 frames a second against 66 with the CPU plot. 16,225 presents, no MMU errors, timeouts or resets.
+- **What didn't:** in `C64K` (5:6:5, ModeFlags bit 7, bit 14 clear) red and blue were swapped. Blue came out as &001F, where it should be &F800.
+
+- **Cause:** the GPU doesn't swap R and B for a 3-channel format.
+  - 0.31 asked for the swap on the store to the 5:6:5 screen (BGR565), and the hardware ignored it.
+  - Mesa's v3dv says the same ("we can't swap R/B on 3-channel images", commit 7f3e79ef9f1).
+  - The format itself was right: BGR565 has red at the top, as Vulkan's R5G6B5_PACK16.
+- **Fix:** the source's swap and the screen's are combined and done on a load in RGBA8 (4 channels), never on a store.
+  - An RGB565 source that needs a swap is first copied whole into the staging buffer as RGBA8, as a UIF source is.
+  - No store asks for a swap any more, for any screen.
+- **Tests:**
+  - The host model now ignores R/B swap on format 7, as the hardware does.
+  - The 5:6:5 TBGR case is checked with an ABGR source, and with MESA's exact pixel (blue gives &F800). 0.31's code fails these.
+  - cl2d's 1:5:5:5 TRGB list now expects no swap on the load or the store, as the two cancel.
+  - Host 5271; emulator 92557.
+- **Kit 35:** as kit 34, needing 0.32.
+
 ## 0.31: DRM_IOCTL_RISCOS_PRESENT, EGL's swap on the GPU (23 November 2026)
 
 Asked for by MESA (EGL's window swap) and agreed by RISC3D: the GPU copies a program's finished frame to the screen, instead of EGL plotting a sprite with the CPU.

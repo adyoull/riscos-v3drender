@@ -142,9 +142,9 @@ for ln in open(os.path.join(d, "present")):
     a, b, w, h = int(a), int(b), int(w), int(h)
     if kind == "5551":   # ARGB8888 raster onto a 1:5:5:5 TRGB screen
         present("present-5551.bin", w, h, a, b,
-                {"Memory Format": 0, "Input Image Format": 27, "R/B swap": 1, "Force alpha 1": 1,
-                 "Height in UB or Stride": 1216},
-                {"Memory Format": 0, "Output Image Format": 45, "R/B swap": 1, "Height in UB or Stride": 1280})
+                {"Memory Format": 0, "Input Image Format": 27, "R/B swap": 0, "Force alpha 1": 1,
+                 "Height in UB or Stride": 1216},   # (0.32) the two swaps cancel, on the load
+                {"Memory Format": 0, "Output Image Format": 45, "R/B swap": 0, "Height in UB or Stride": 1280})
     else:                # a UIF frame (padded to 72 rows: 9 blocks) untiled to the staging buffer
         present("present-uif.bin", w, h, a, b,
                 {"Memory Format": 4, "Input Image Format": 27, "R/B swap": 0, "Force alpha 1": 1,

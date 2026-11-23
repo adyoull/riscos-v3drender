@@ -466,7 +466,7 @@ present_screen (struct v3d_dev *dev, struct v3d_screen *s)
   else if (log2bpp == 4 && ncolour == 65535 && (flags & (1u << 7)))
     {
       s->kind = V3D_SCREEN_565;
-      s->rb_swap = !rgb;		/* BGR565 has R in the top bits: TRGB's */
+      s->rb_swap = !rgb;		/* BGR565 has R in the top bits: TRGB's (swapped on a load: 3 channels can't be) */
     }
   else if (log2bpp == 4 && ncolour == 65535)
     {

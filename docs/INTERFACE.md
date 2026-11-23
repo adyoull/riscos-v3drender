@@ -188,6 +188,7 @@ struct drm_riscos_present
   - UIF, with `SRC_UIF`, or `SRC_UIF_XOR` for the XOR form: `uif_height_or_stride` is the padded height in pixels (Mesa's slice `padded_height`, a multiple of 8). It is given to the GPU in UIF blocks (8 rows). The whole image is untiled into a raster staging buffer first, then the rectangles are copied from there.
   - 32bpp UIF is checked against a model of the layout in the host test. 16bpp UIF (RGB565) follows the same rule, but no model checks it yet; the first Pi test will show whether it's right.
 - **Alpha:** always taken as 1. In 32bpp modes the top byte is written as FF.
+- **R/B order (0.32):** the swap is done when loading as RGBA8, as the GPU can't swap a 3-channel format (BGR565). An RGB565 source going to a screen in the other order is first copied to the staging buffer, as a UIF one is.
 - **Screen:** read afresh on each call:
   - the current mode (VDU variables);
   - the framestore (GraphicsV 9);

@@ -407,14 +407,21 @@ present (struct v3d_dev *v3d, int f, struct drm_riscos_present *a)
   int cl_bo = v3d_lookup_bo (v3d, p->file, p->cl_handle);
   int scr_bo = v3d_lookup_bo (v3d, p->file, p->scr_handle);
   uint32_t src_gpu = v3d_bo_offset (v3d, bo), src_stride = a->uif_height_or_stride;
-  uint64_t lg = G_FORMAT (sfmt) | (sswap ? G_SWAP : 0) | G_ALPHA_1;
-  uint64_t sg = G_FORMAT (dfmt) | (s.rb_swap ? G_SWAP : 0) | G_STRIDE (s.stride);
+  /* (0.32) R/B swap only on a load in RGBA8. The GPU doesn't swap a
+     3-channel format (BGR565) at all: Mesa's v3dv says so, and 0.31's
+     store swap into a 5:6:5 TBGR screen did nothing (MESA's Pi test). So
+     the source's swap and the screen's are combined and done on a load
+     of 4 channels; an RGB565 source that needs one goes through the
+     staging buffer first, as a UIF source does. */
+  uint32_t swap = sswap ^ s.rb_swap;
+  uint64_t lg = G_FORMAT (sfmt) | G_ALPHA_1;
+  uint64_t sg = G_FORMAT (dfmt) | G_STRIDE (s.stride);
   uint32_t scr = p->scr_gpu + s.off;
   int src_bo = bo;
 
-  /* UIF: untiled, whole, to the staging buffer as RGBA8 (swapped and
-     alpha forced on the way in); the rectangles come from there */
-  if (uif)
+  /* UIF, or RGB565 to swap: copied whole to the staging buffer as RGBA8
+     (alpha forced on the way in); the rectangles come from there */
+  if (uif || (sfmt == FMT_BGR565 && swap))
     {
       ret = staging (v3d, a->width * 4u * a->height);
       if (ret)
@@ -422,8 +429,8 @@ present (struct v3d_dev *v3d, int f, struct drm_riscos_present *a)
       int stage_bo = v3d_lookup_bo (v3d, p->file, p->stage_handle);
       struct frame fr = {
 	.src = src_gpu, .dst = p->stage_gpu,
-	.lg = lg | G_MEMORY ((a->flags & DRM_RISCOS_PRESENT_SRC_UIF_XOR) ? MEM_UIF_XOR : MEM_UIF)
-	      | G_STRIDE (src_stride >> 3),
+	.lg = lg | (uif ? G_MEMORY ((a->flags & DRM_RISCOS_PRESENT_SRC_UIF_XOR) ? MEM_UIF_XOR : MEM_UIF)
+		    | G_STRIDE (src_stride >> 3) : G_STRIDE (src_stride)),
 	.sg = G_FORMAT (FMT_RGBA8) | G_STRIDE (a->width * 4u),
 	.width = a->width, .height = a->height,
 	.bos = { (uint16_t) cl_bo, (uint16_t) bo, (uint16_t) stage_bo }, .nbos = 3,
@@ -438,7 +445,7 @@ present (struct v3d_dev *v3d, int f, struct drm_riscos_present *a)
       lg = G_FORMAT (FMT_RGBA8);
       src_bo = stage_bo;
     }
-  lg |= G_STRIDE (src_stride);
+  lg |= G_STRIDE (src_stride) | (swap ? G_SWAP : 0);
 
   for (uint32_t i = 0; i < a->rect_count; i++)
     {

@@ -1577,7 +1577,8 @@ exec_present (uint32_t start, uint32_t end)
 	    memcpy (&addr, cl + i + 9, 4);
 	    uint32_t fmt = (g >> 12) & 63, mem = (g >> 4) & 7, field = (g >> 28) & 0xFFFFF;
 	    uint32_t bpp = fmt == 27 ? 4 : 2;
-	    int swap = (g >> 20) & 1, alpha1 = op == 30 && ((g >> 18) & 1);
+	    /* (0.32) as the GPU: no R/B swap of a 3-channel format (BGR565) */
+	    int swap = ((g >> 20) & 1) && fmt != 7, alpha1 = op == 30 && ((g >> 18) & 1);
 	    if ((g & 0xF) || (fmt != 27 && fmt != 7 && fmt != 45) || (mem != 0 && mem != 4 && mem != 5)
 		|| (mem && (op == 29 || bpp != 4)) || (g >> 48))
 	      {
@@ -1750,7 +1751,8 @@ test_031_present (void)
   static const struct { uint32_t fourcc, kind, swap, stride; } cases[] = {
     { DRM_FORMAT_ARGB8888, V3D_SCREEN_RGBA8, 1, 2600 },
     { DRM_FORMAT_XBGR8888, V3D_SCREEN_RGBA8, 1, 2560 },
-    { DRM_FORMAT_RGB565, V3D_SCREEN_565, 1, 1280 },
+    { DRM_FORMAT_RGB565, V3D_SCREEN_565, 1, 1280 },	/* (0.32) through the staging buffer */
+    { DRM_FORMAT_ABGR8888, V3D_SCREEN_565, 1, 1280 },	/* (0.32) MESA's C64K: blue at the top */
     { DRM_FORMAT_RGB565, V3D_SCREEN_565, 0, 1300 },
     { DRM_FORMAT_ABGR8888, V3D_SCREEN_5551, 0, 1280 },
     { DRM_FORMAT_ARGB8888, V3D_SCREEN_5551, 1, 1280 },
@@ -1764,10 +1766,10 @@ test_031_present (void)
       a.format = cases[k].fourcc;
       a.uif_height_or_stride = a.format == DRM_FORMAT_RGB565 ? 640 : 1216;
       pbad_list = 0;
-      if (k == 5)
+      if (k == 6)
 	pdump = "out/cl2d/present-5551.bin";
       CHECK (present_ (f, &a) == 0);
-      if (k == 5)
+      if (k == 6)
 	{
 	  FILE *o = fopen ("out/cl2d/present", "w");
 	  if (o)
@@ -1780,6 +1782,21 @@ test_031_present (void)
       want_rects (&a, sp, rr, 5);
       CHECK (scr_same ());
     }
+  /* (0.32) MESA's case exactly: blue (ABGR 00 00 FF FF) onto 5:6:5 TBGR
+     is &F800 (blue at the top), not &001F */
+  {
+    psc.kind = V3D_SCREEN_565, psc.rb_swap = 1, psc.stride = 1280, psc.off = 0;
+    struct drm_riscos_present b = a;
+    b.format = DRM_FORMAT_ABGR8888, b.uif_height_or_stride = 1216;
+    struct drm_riscos_present_rect br[1] = { { 0, 0, 1, 1, 0, 0 } };
+    b.rects = (uintptr_t) br, b.rect_count = 1;
+    uint8_t keep[4];
+    memcpy (keep, sp, 4);
+    sp[0] = 0, sp[1] = 0, sp[2] = 0xFF, sp[3] = 0xFF;
+    CHECK (present_ (f, &b) == 0 && (pscr[0] | pscr[1] << 8) == 0xF800);
+    memcpy (sp, keep, 4);
+    memcpy (pwant, pscr, sizeof pscr);
+  }
   /* a UIF source (100x70, padded to 72 rows), untiled first */
   psc.kind = V3D_SCREEN_RGBA8, psc.rb_swap = 0, psc.stride = 2600, psc.off = 0;
   struct drm_riscos_present u = a;
@@ -1790,7 +1807,8 @@ test_031_present (void)
   pjobs = 0;
   pbad_list = 0;
   pdump = "out/cl2d/present-uif.bin";
-  CHECK (present_ (f, &u) == 0 && pjobs == 3 && dev->present.untiled == 1 && dev->present.stage_handle);
+  uint32_t untiled = dev->present.untiled;
+  CHECK (present_ (f, &u) == 0 && pjobs == 3 && dev->present.untiled == untiled + 1 && dev->present.stage_handle);
   {
     FILE *o = fopen ("out/cl2d/present", "a");
     if (o)
