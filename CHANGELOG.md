@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.29: "Z-layer complex overlays" in Configure's RISC3D window (23 November 2026)
+
+The owner asked for overlays layered as on Linux, in a way that stays compatible with VideoOverlay. On the native Pi this was already in the OS: BCMVideo (`s/GVOverlay`) creates VideoOverlay's overlays as firmware (dispmanx) layers.
+- In a 32bpp alpha desktop mode they are Z-Order: at layer -192 and below, under the desktop (which the firmware puts at -127), seen through VideoOverlay's transparent hole. GraphicsV 28 orders several.
+- Otherwise they are Basic, at layer 1024 over everything.
+- BCMVideo offers alpha modes only with `framebuffer_ignore_alpha=0` in config.txt.
+- Tested on the owner's Pi 4 through TestAgent, with config.txt backed up first:
+  - before: Basic;
+  - with the line, after a restart, in `C16M LABGR`: colour bars in a window, covered properly by a menu and a Filer window, and the desktop drawn correctly.
+- The owner named it "Enable z-layer complex overlays".
+
+- **Reason 4's hardware text gains a line**, so Configure's RISC3D window shows the real state:
+  - `Z-layer complex overlays`, with one of:
+    - "on: video overlays behind the desktop, under its windows and menus" (the desktop mode has the alpha flag);
+    - "off: available in this mode's alpha form" (OS_CheckModeValid accepts the current mode with ModeFlags bit 15);
+    - "off: needs framebuffer_ignore_alpha=0 in config.txt and a restart";
+    - "off: needs a 16 million colour desktop".
+  - From OS_ReadModeVariable and OS_CheckModeValid; nothing is changed.
+- Turning it on and off is RISC3D's part (a handoff): the config.txt line and the alpha mode. V3DRender has no part in display overlays.
+- **Tests:** emulator 77477 (all four states; the alpha form asked of OS_CheckModeValid is the current mode with &8000 added). Host 2129 (unchanged).
+- **Kit 32:** as kit 31, needing 0.29.
+
 ## 0.28: desktop 2D switched from Configure's RISC3D window (23 November 2026)
 
 From RISC3D, at the owner's request: turn the desktop's 2D on and off in Configure's RISC3D window rather than with a command (RISC3D 0.10, !RISC3DSetup 1.07, DRIVER-GUIDE "Desktop 2D").

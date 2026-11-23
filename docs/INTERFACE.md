@@ -185,6 +185,14 @@ zeroed as before, so a new BO still starts all zeroes, as on Linux.
   `bo_creates, bo_from_pool, pages_reused, pages_claimed` (`__u32`) and
   `create_ns, zero_ns` (`__u64`) at the end.
 
+## Z-layer complex overlays (0.29)
+
+Reason 4 adds a `Z-layer complex overlays` line: on (the desktop mode is 32bpp
+with the alpha flag, so BCMVideo's overlays are Z-Order, behind the desktop);
+off but available (the current mode's alpha form is valid); off, needing
+`framebuffer_ignore_alpha=0` and a restart; or off, needing a 16 million
+colour desktop. V3DRender only reports it.
+
 ## Desktop 2D through RISC3D (0.28)
 
 V3DRender registers with RISC3D flags bit 4 and answers driver reason 5:

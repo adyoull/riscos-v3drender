@@ -41,7 +41,7 @@
 #include "plat_pi4.h"
 #include "twod.h"
 
-#define VERSION 28		/* 0.28 */
+#define VERSION 29		/* 0.29 */
 #define SWI_BASE 0x5AFC0
 #ifndef OS_SetVarVal
 #define OS_SetVarVal		0x24
@@ -237,6 +237,42 @@ tdec (struct text *t, uint32_t v)
   tput (t, n + i);
 }
 
+/* (0.29) Z-layer complex overlays: BCMVideo makes VideoOverlay's
+   overlays Z-Order (in firmware layers behind the desktop, seen through
+   its alpha) when the desktop mode is 32bpp with alpha, and it offers
+   such modes only when config.txt has framebuffer_ignore_alpha=0.
+   0 not this kind of mode (not 32bpp RGB), 1 on, 2 off but an alpha
+   mode is available, 3 off: needs framebuffer_ignore_alpha=0 and a
+   restart. */
+#define OS_ReadModeVariable	0x35
+#define OS_CheckModeValid	0x3F
+#define MODEFLAG_ALPHA		0x8000
+#define MODEFLAG_FAMILY		0x3000
+
+static int
+overlay_state (void)
+{
+  uint32_t v[5];
+  static const unsigned vars[5] = { 9, 0, 11, 12, 3 };	/* Log2BPP, ModeFlags, X/YWindLimit, NColour */
+  for (int i = 0; i < 5; i++)
+    {
+      regs r = {{ 0xFFFFFFFF, vars[i] }};
+      if (swix_regs (OS_ReadModeVariable, &r))
+	return 0;
+      v[i] = r.r[2];
+    }
+  if (v[0] != 5 || (v[1] & MODEFLAG_FAMILY))
+    return 0;
+  if (v[1] & MODEFLAG_ALPHA)
+    return 1;
+  uint32_t sel[10] = { 1, v[2] + 1, v[3] + 1, 5, 0xFFFFFFFF,
+		       0, v[1] | MODEFLAG_ALPHA, 3, v[4], 0xFFFFFFFF };
+  regs c = {{ (unsigned) sel }};
+  if (swix_regs (OS_CheckModeValid, &c) || (int) c.r[0] < 0)
+    return 3;
+  return 2;
+}
+
 static void
 hardware_text (char *buf, uint32_t size, uint32_t *need)
 {
@@ -284,6 +320,21 @@ hardware_text (char *buf, uint32_t size, uint32_t *need)
   tput (&t, twod.mode == TWOD_OFF ? "off (*V3DRender 2D on)" : twod.mode == TWOD_ASYNC
 	? "on, not waited for" : "on: window moves, scrolls and fills on the GPU");
   tput (&t, "\n");
+  switch (overlay_state ())		/* (0.29) */
+    {
+    case 0:
+      tput (&t, "Z-layer complex overlays\toff: needs a 16 million colour desktop\n");
+      break;
+    case 1:
+      tput (&t, "Z-layer complex overlays\ton: video overlays behind the desktop, under its windows and menus\n");
+      break;
+    case 2:
+      tput (&t, "Z-layer complex overlays\toff: available in this mode's alpha form (C16M LABGR)\n");
+      break;
+    case 3:
+      tput (&t, "Z-layer complex overlays\toff: needs framebuffer_ignore_alpha=0 in config.txt and a restart\n");
+      break;
+    }
   if (size)
     *t.p = 0;
   *need = t.need + 1;

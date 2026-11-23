@@ -211,6 +211,17 @@ class Pi4(Machine):
             return
         if base == 0x1E and r[0] == 18:           # OS_Module lookup: nothing loaded
             return self._fail(number, 0x102, "Module '%s' not found" % self.cstr(r[1]))
+        if base == 0x35:                          # (0.29) OS_ReadModeVariable
+            mv = getattr(self, "modevars", {9: 5, 0: 0x40, 11: 1919, 12: 1199, 3: 0xFFFFFFFF})
+            if r[1] not in mv:
+                return self._fail(number, 0xAA, "Bad mode variable")
+            out(2, mv[r[1]])
+            return
+        if base == 0x3F:                          # (0.29) OS_CheckModeValid
+            sel = [self.word(r[0] + 4 * i) for i in range(10)]
+            self.checked_modes = getattr(self, "checked_modes", []) + [sel]
+            out(0, r[0] if getattr(self, "alpha_ok", False) else 0xFFFFFFFF)
+            return
         if base == 0x0D:                          # (0.27) OS_Find
             if not hasattr(self, "files"):
                 self.files, self.handles, self.ftypes = {}, {}, {}
@@ -496,7 +507,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 28 and out[8] != 0, "version 0.28, statistics in r8")
+    check(out[0] == 29 and out[8] != 0, "version 0.29, statistics in r8")
     check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
@@ -531,6 +542,24 @@ def main():
         cut = bytes(m.uc.mem_read(B, 21))
         check(not v and o[2] == need and cut[19] == 0 and cut[20] == 0xAA and cut[:19] == txt[:19],
               "reason 4 into 20 bytes: 19 and a 0, nothing past it")
+        # (0.29) Z-layer complex overlays, in all three states
+        def hw():
+            o, v, _ = m.call(d["entry"], {0: 4, 1: B, 2: 600, 12: d["r12"]})
+            return bytes(m.uc.mem_read(B, o[2])).split(b"\0")[0].decode()
+        t1 = hw()
+        check("Z-layer complex overlays\toff: needs framebuffer_ignore_alpha=0" in t1,
+              "(0.29) no alpha modes offered: needs the config.txt line")
+        sel = m.checked_modes[-1]
+        check(sel[:4] == [1, 1920, 1200, 5] and sel[5:7] == [0, 0x8040] and sel[9] == 0xFFFFFFFF,
+              "(0.29) asks for this mode's alpha form (%s)" % sel)
+        m.alpha_ok = True
+        check("Z-layer complex overlays\toff: available" in hw(), "(0.29) alpha mode available")
+        m.modevars = {9: 5, 0: 0x8040, 11: 1919, 12: 1199, 3: 0xFFFFFFFF}
+        check("Z-layer complex overlays\ton: video overlays behind the desktop" in hw(), "(0.29) on in an alpha mode")
+        m.modevars = {9: 4, 0: 0x4040, 11: 1919, 12: 1199, 3: 65535}
+        check("Z-layer complex overlays\toff: needs a 16 million colour desktop" in hw(), "(0.29) 16bpp: needs 16M colours")
+        del m.modevars
+        m.alpha_ok = False
         # (0.28) reason 5: desktop 2D, the same as *V3DRender 2D
         o, v, _ = m.call(d["entry"], {0: 5, 1: 0xFFFFFFFF, 12: d["r12"]})
         check(not v and o[0] == 0, "(0.28) reason 5 reads: off")
@@ -1302,7 +1331,7 @@ def test_027_log_and_options(data):
     check(any(l.startswith("options: NoWFI Size 256 MB; 2048 MB of RAM") for l in lines),
           "(0.27) the options and RAM in the log")
     check(any(l.startswith("HAL_IRQClear at &") for l in lines), "(0.27) HAL_IRQClear's address")
-    check(m.ftypes.get("$.V3DLog") == 0xFFF and log.splitlines()[0].split(" cs  ")[1].startswith("V3DRender 0.28: "),
+    check(m.ftypes.get("$.V3DLog") == 0xFFF and log.splitlines()[0].split(" cs  ")[1].startswith("V3DRender 0.29: "),
           "(0.27) a text file, each line timed and versioned")
     # the first interrupt, noted from a callback
     m.finish(R["INT_FRDONE"])
