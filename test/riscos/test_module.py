@@ -282,6 +282,12 @@ class Pi4(Machine):
                 out(3, start)
                 return
             if reason == 65:
+                sm = getattr(self, "screen_map", None)   # (0.31) the screen's logical address
+                if sm and sm[0] <= r[1] < sm[0] + sm[2]:
+                    pa = sm[1] + (r[1] - sm[0])
+                    out(0, pa & 0xFFFFFFFF)
+                    out(1, pa >> 32)
+                    return
                 um = getattr(self, "user_mem", None)
                 if um and um[0] <= r[1] < um[0] + um[1]:
                     pa = 0x500000000 + (r[1] - um[0])     # the program's memory
@@ -520,7 +526,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 30 and out[8] != 0, "version 0.30, statistics in r8")
+    check(out[0] == 31 and out[8] != 0, "version 0.31, statistics in r8")
     check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
@@ -1284,6 +1290,87 @@ def test_2d(data):
     check(err is None and m.gfxv is None and not m.areas, "finalised: GraphicsV released, areas gone")
 
 
+def test_031_present(data):
+    """(0.31) DRM_IOCTL_RISCOS_PRESENT through the module: the screen read
+    from the VDU variables, GraphicsV 9 and OS_Memory 65 (the VDU's bank),
+    the formats it takes, and the jobs on the program's queue"""
+    FS = 0x3E000000
+    m = Pi4()
+    m.vdu = {0: 0, 3: 0xFFFFFFFF, 9: 5, 6: 7680, 11: 1919, 12: 1079, 148: 0xFE000000 + 7680 * 1080,
+             0x94: 0xFE000000, 0x95: 0xFE000000, 0x96: 7680 * 1080}
+    m.fs = (FS, 16 << 20)
+    m.screen_map = (0xFE000000, FS, 16 << 20)
+    m.screen_flags = 0
+    m.screen_da_flags = 1 << 5 | 1 << 4
+    mod = Module(m, data, 0x20010000)
+    check(initialise(mod, "NoWFI") is None, "(0.31) loads")
+    check(getattr(m, "gfxv", None) is None, "(0.31) 2D off: GraphicsV not claimed")
+    out, e = mod.swi(1, {0: 0})
+    f = out[0]
+    A = SCRATCH + 0x8000
+
+    def io(req, payload):
+        m.uc.mem_write(A, payload)
+        o, e2 = mod.swi(3, {0: f, 1: req, 2: A})
+        check(e2 is None, "ioctl raised no error: %s" % e2)
+        return o[0] - (1 << 32) if o[0] & 0x80000000 else o[0]
+    ret, b = None, None
+    m.uc.mem_write(A, struct.pack("<IIII", 640 * 480 * 4, 0, 0, 0))
+    o, _ = mod.swi(3, {0: f, 1: R["IOCTL_CREATE_BO"], 2: A})
+    _, _, h, off = struct.unpack("<IIII", bytes(m.uc.mem_read(A, 16)))
+    RECTS = A + 0x200
+    m.uc.mem_write(RECTS, struct.pack("<12i", 0, 0, 640, 480, 0, 0, 1900, 1070, 100, 100, 0, 0))
+
+    def present(flags=0, fmt=0x34324241, count=2, stride=2560, handle=None):
+        return io(R["IOCTL_PRESENT"], struct.pack("<8IQII", h if handle is None else handle, fmt, flags,
+                                                     640, 480, stride, count, 0, RECTS, 0, 0))
+    check(present(count=0) == 0, "(0.31) a check without drawing")
+    n = len(m.started)
+    check(present() == 0, "(0.31) a 32bpp TBGR screen, the second bank")
+    jobs = [s for s in m.started[n:] if s[0] == "render"]
+    check(len(jobs) == 1 and jobs[0][2] - jobs[0][1] == 52 + 10 * 8 * 32 + 1,
+          "(0.31) the first rectangle's job (10x8 tiles) started: %s" % jobs)
+    for _ in range(4):
+        m.finish(R["INT_FRDONE"])
+    jobs = [s for s in m.started[n:] if s[0] == "render"]
+    check(len(jobs) == 2 and jobs[1][2] - jobs[1][1] == 52 + 1 * 1 * 32 + 1,
+          "(0.31) then the clipped one (20x10: one tile): %s" % jobs)
+    check(present(flags=2) == -95, "(0.31) VSYNC isn't offered: -EOPNOTSUPP")
+    check(present(fmt=0x36314752, stride=1280) == 0, "(0.31) an RGB565 source")
+    m.finish(R["INT_FRDONE"])
+    m.finish(R["INT_FRDONE"])
+    m.vdu.update({0: 0x80, 3: 65535, 9: 4, 6: 3840})      # 16bpp 5:6:5
+    check(present() == 0, "(0.31) a 5:6:5 screen")
+    m.finish(R["INT_FRDONE"])
+    m.finish(R["INT_FRDONE"])
+    m.vdu.update({0: 0x4000})                             # 1:5:5:5 TRGB
+    check(present() == 0, "(0.31) a 1:5:5:5 TRGB screen")
+    m.finish(R["INT_FRDONE"])
+    m.finish(R["INT_FRDONE"])
+    m.vdu.update({0: 0, 3: 4095})                         # 4,096 colours
+    check(present(count=0) == -22, "(0.31) a 4K screen: -EINVAL")
+    m.vdu.update({3: 255, 9: 3, 6: 1920})                 # 256 colours
+    check(present(count=0) == -22, "(0.31) 8bpp: -EINVAL")
+    m.vdu.update({0: 0, 3: 0xFFFFFFFF, 9: 5, 6: 7680})
+    m.screen_da_flags = 1 << 4                            # cacheable
+    check(present() == -16, "(0.31) a screen the CPU caches: -EBUSY")
+    m.screen_da_flags = 1 << 5 | 1 << 4
+    m.vdu[148] = 0x80000000                               # not the screen
+    check(present(count=0) == -22, "(0.31) the VDU writing outside the framestore: -EINVAL")
+    m.vdu[148] = 0xFE000000
+    check(present(handle=77) == -2, "(0.31) a bad handle: -ENOENT")
+    m.output = ""
+    mod.command("V3DRender")
+    check("Presents:              4 (" in m.output and "refused:" in m.output,
+          "(0.31) *V3DRender shows them:\n%s" % [l for l in m.output.splitlines() if "resent" in l or "refused" in l])
+    mod.swi(2, {0: f})                                    # the last program: PRESENT's file goes
+    m.output = ""
+    mod.command("V3DRender")
+    check("Files open:            0" in m.output, "(0.31) no files left open")
+    err = mod.finalise()
+    check(err is None and not m.areas, "(0.31) finalised")
+
+
 def test_domain_first(data):
     """(0.20) the firmware's V3D power domain is turned on before any V3D
     register is read: a CM4 aborted at start-up, most likely from the
@@ -1382,7 +1469,7 @@ def test_027_log_and_options(data):
     check(any(l.startswith("options: NoWFI Size 256 MB; 2048 MB of RAM") for l in lines),
           "(0.27) the options and RAM in the log")
     check(any(l.startswith("HAL_IRQClear at &") for l in lines), "(0.27) HAL_IRQClear's address")
-    check(m.ftypes.get("$.V3DLog") == 0xFFF and log.splitlines()[0].split(" cs  ")[1].startswith("V3DRender 0.30: "),
+    check(m.ftypes.get("$.V3DLog") == 0xFFF and log.splitlines()[0].split(" cs  ")[1].startswith("V3DRender 0.31: "),
           "(0.27) a text file, each line timed and versioned")
     # the first interrupt, noted from a callback
     m.finish(R["INT_FRDONE"])
@@ -1474,6 +1561,7 @@ try:
     test_domain_first(open(sys.argv[1], "rb").read())
     test_027_log_and_options(open(sys.argv[1], "rb").read())
     test_030_clamp(open(sys.argv[1], "rb").read())
+    test_031_present(open(sys.argv[1], "rb").read())
 except (EmuError, UcError) as e:
     failures += 1
     print("FAIL:", e)

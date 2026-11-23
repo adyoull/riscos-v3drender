@@ -285,7 +285,7 @@ int
 v3d_programs_open (struct v3d_dev *v3d)
 {
   for (int f = 0; f < V3D_MAX_FILES; f++)
-    if (v3d->files[f].used && f != v3d->twod.file)
+    if (v3d->files[f].used && !v3d_internal_file (v3d, f))
       return 1;
   return 0;
 }

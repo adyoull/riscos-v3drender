@@ -177,6 +177,20 @@ struct v3d_stats
     refused_memory, refused_last_bytes;
 };
 
+/* (0.31) the screen as PRESENT finds it */
+#define V3D_PRESENT_SLOTS 4
+enum { V3D_SCREEN_RGBA8, V3D_SCREEN_565, V3D_SCREEN_5551 };
+struct v3d_screen
+{
+  uint64_t fs_pa;			/* the framestore (GraphicsV 9) */
+  uint32_t fs_bytes;
+  uint32_t off;				/* where the VDU writes (its bank), from fs_pa */
+  uint32_t stride, width, height;	/* bytes a row; pixels */
+  uint32_t kind;			/* V3D_SCREEN_* */
+  uint32_t rb_swap;			/* the GPU's R/B swap is wanted storing to it */
+  int cached;				/* the CPU caches it just now: -EBUSY */
+};
+
 struct v3d_dev
 {
   /* set by the platform before v3d_init */
@@ -248,6 +262,25 @@ struct v3d_dev
     uint32_t us_build, us_submit, us_wait;	/* (0.19) where the time goes */
     uint64_t ns;			/* CPU time from submit to done */
   } twod;
+  /* (0.31) DRM_IOCTL_RISCOS_PRESENT (v3d_present.c): its own file for the
+     lists, the screen's mapping and the staging buffer UIF frames are
+     untiled into; the jobs go on the presenting program's file */
+  struct v3d_present
+  {
+    int file;				/* -1: none yet */
+    uint32_t cl_handle, cl_gpu;
+    uint8_t *cl_cpu;
+    uint32_t slot, at;			/* the part of the list buffer in use, and how far */
+    struct v3d_fence slot_fence[V3D_PRESENT_SLOTS];	/* each part's last job */
+    uint32_t scr_handle, scr_gpu, scr_bytes;
+    uint64_t scr_pa;
+    uint32_t stage_handle, stage_gpu, stage_bytes;
+    uint32_t presents, rects, jobs, probes, refused, clipped_away, untiled;
+    uint32_t last_error;
+  } present;
+  /* (0.31) the screen PRESENT draws to, read afresh each call (the
+     platform's; 0: PRESENT isn't offered, -ENOTTY) */
+  int (*present_screen) (struct v3d_dev *v3d, struct v3d_screen *s);
 };
 
 /* Errors are Linux's errno values, negated. */
@@ -323,6 +356,30 @@ int v3d_bo_create (struct v3d_dev *v3d, uint32_t bytes, int *bo_out);
 int v3d_bo_create_cached (struct v3d_dev *v3d, uint32_t bytes, int cached, int *bo_out);
 int v3d_bo_import (struct v3d_dev *v3d, uintptr_t cpu, uint32_t bytes, int *bo_out);
 int v3d_bo_import_phys (struct v3d_dev *v3d, uint64_t pa, uint32_t bytes, int *bo_out);
+
+/* (0.31) DRM_IOCTL_RISCOS_PRESENT (v3d_present.c) */
+struct drm_riscos_present;
+int v3d_present (struct v3d_dev *v3d, int f, struct drm_riscos_present *args);
+void v3d_present_stop (struct v3d_dev *v3d);	/* waits, closes its file */
+void v3d_present_files_closed (struct v3d_dev *v3d);	/* (*V3DReset all) */
+uint32_t v3d_present_rcl (uint8_t *cl, uint32_t cap, uint32_t tile_list,
+			  uint32_t src, uint64_t load_g, uint32_t dst, uint64_t store_g,
+			  uint32_t width, uint32_t height, uint32_t row0, uint32_t rows);
+/* the internal files (2D's, PRESENT's): no program's */
+static inline int
+v3d_internal_file (const struct v3d_dev *v3d, int f)
+{
+  return f == v3d->twod.file || f == v3d->present.file;
+}
+/* (0.31) a render job on file f's queue, from the core: the list at
+   start..end, holding BOs bos[0..n-1] (indices, referenced here), after
+   in_sync and earlier jobs on the BOs; its fence goes to out_sync and
+   *fence */
+int v3d_submit_render (struct v3d_dev *v3d, int f, uint32_t start, uint32_t end,
+		       const uint16_t *bos, uint32_t n, uint32_t in_sync,
+		       uint32_t out_sync, struct v3d_fence *fence);
+int v3d_lookup_bo (struct v3d_dev *v3d, int f, uint32_t handle);	/* 0: none */
+void v3d_signal_syncobj (struct v3d_dev *v3d, int f, uint32_t handle);	/* done now */
 
 /* (0.17) the desktop's rectangle copies (v3d_2d.c) */
 #define V3D_2D_COLS_DESCENDING 1u	/* tile order, for overlapping copies */

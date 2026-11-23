@@ -9,7 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 mkdir -p out/obj
-CORE="core/v3d_hw.c core/v3d_sched.c core/v3d_bo.c core/v3d_ioctl.c core/v3d_2d.c"
+CORE="core/v3d_hw.c core/v3d_sched.c core/v3d_bo.c core/v3d_ioctl.c core/v3d_2d.c core/v3d_present.c"
 INC="-Iinclude -Icore -Icore/compat"
 
 # the host test, with the address and undefined-behaviour checkers

@@ -336,6 +336,55 @@ v3d_2d_copy_rcl (uint8_t *cl, uint32_t cap, uint32_t gpu_base, uint32_t tile_lis
   return finish (&c, cl);
 }
 
+/* (0.31) PRESENT's list: as a copy's, but the load and the store each
+   with their own General word (formats, memory format, R/B swap, alpha
+   forced to 1), from src to dst: the source's tile to the screen's */
+struct blit_tile
+{
+  uint64_t lg, sg;
+  uint32_t src, dst;
+};
+
+static void
+blit_tile (struct cl *c, const void *arg)
+{
+  const struct blit_tile *t = arg;
+  put (c, 124, 1);			/* Tile Coordinates (stamped per tile) */
+  put (c, 0, 3);
+  put (c, 30, 1);			/* Load Tile Buffer General: the source */
+  put (c, t->lg, 8);
+  put (c, t->src, 4);
+  put (c, 26, 1);			/* End of Loads */
+  put (c, 29, 1);			/* Store Tile Buffer General: the screen */
+  put (c, t->sg, 8);
+  put (c, t->dst, 4);
+  put (c, 27, 1);			/* End of Tile Marker */
+}
+
+/* rows row0 .. row0+rows-1 of the frame's tiles (a big frame goes in
+   several jobs, each with the whole frame's header: a UIF image can only
+   be addressed from its start) */
+uint32_t
+v3d_present_rcl (uint8_t *cl, uint32_t cap, uint32_t tile_list,
+		 uint32_t src, uint64_t load_g, uint32_t dst, uint64_t store_g,
+		 uint32_t width, uint32_t height, uint32_t row0, uint32_t rows)
+{
+  struct cl c = { cl, cl + cap };
+  uint32_t tx = (width + TILE - 1) / TILE, ty = (height + TILE - 1) / TILE;
+  if (!width || !height || width > 0xFFFF || height > 0xFFFF || !rows
+      || row0 >= ty || rows > ty - row0
+      || 52u + (uint64_t) tx * rows * COPY_TILE + 1 > cap)
+    return 0;
+  header (&c, width, height, tile_list, 0);
+  uint32_t t[COPY_TILE / 4];
+  struct blit_tile bt = { load_g, store_g, src, dst };
+  template (t, COPY_TILE / 4, blit_tile, &bt);
+  for (uint32_t row = row0; row < row0 + rows; row++)
+    for (uint32_t col = 0; col < tx; col++)
+      put_tile (&c, t, COPY_TILE / 4, col, row);
+  return finish (&c, cl);
+}
+
 struct fill_tile
 {
   uint64_t g;

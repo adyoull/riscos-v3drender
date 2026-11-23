@@ -2,7 +2,7 @@
 | 0.19), writes Time2DOut here. Draws on part of the screen for about 3
 | minutes: leave the mouse alone. Press Space at the end.
 Set V3DCheck$Dir <Obey$Dir>
-RMEnsure V3DRender 0.30 RMLoad <Obey$Dir>.V3DRender
-RMEnsure V3DRender 0.30 Error V3DRender 0.30 didn't load
+RMEnsure V3DRender 0.31 RMLoad <Obey$Dir>.V3DRender
+RMEnsure V3DRender 0.31 Error V3DRender 0.31 didn't load
 WimpSlot -min 1000K -max 1000K
 Run <Obey$Dir>.Time2DProg

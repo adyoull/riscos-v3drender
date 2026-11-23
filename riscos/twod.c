@@ -179,7 +179,7 @@ usable (void)
      CPU while any program uses the GPU. */
   if (!twod.alongside)
     for (int f = 0; f < V3D_MAX_FILES; f++)
-      if (v3d->files[f].used && f != v3d->twod.file)
+      if (v3d->files[f].used && !v3d_internal_file (v3d, f))
 	{
 	  twod.prog_open++;
 	  return 0;
@@ -439,10 +439,66 @@ twod_mode_changed (void)
   forget ();
 }
 
+/* --- PRESENT's screen (0.31) ---------------------------------------- */
+
+/* The screen as it is now, for DRM_IOCTL_RISCOS_PRESENT: read afresh
+   each call, apart from the desktop's 2D (which may be off). Where the
+   VDU writes (VDU variable 148, ScreenStart: OS_Byte 112's bank) is
+   turned into its physical address, so any bank of the framestore works.
+   ModeFlags bit 14: RGB order (TRGB); 16bpp NColour 65535 with ModeFlags
+   bit 7 is 5:6:5, without it 1:5:5:5; 4,096 colours isn't taken. */
+static int
+present_screen (struct v3d_dev *dev, struct v3d_screen *s)
+{
+  (void) dev;
+  static const int vars[] = { 0, 3, 9, 6, 11, 12, 148, -1 };
+  int v[7];
+  regs r = {{ (unsigned) vars, (unsigned) v }};
+  if (swix_regs (OS_ReadVduVariables, &r))
+    return -V3D_EINVAL;
+  uint32_t flags = (uint32_t) v[0], ncolour = (uint32_t) v[1], log2bpp = (uint32_t) v[2];
+  uint32_t rgb = (flags >> 14) & 1;
+  if (log2bpp == 5)
+    {
+      s->kind = V3D_SCREEN_RGBA8;
+      s->rb_swap = rgb;			/* TBGR: R, G, B bytes, RGBA8's order */
+    }
+  else if (log2bpp == 4 && ncolour == 65535 && (flags & (1u << 7)))
+    {
+      s->kind = V3D_SCREEN_565;
+      s->rb_swap = !rgb;		/* BGR565 has R in the top bits: TRGB's */
+    }
+  else if (log2bpp == 4 && ncolour == 65535)
+    {
+      s->kind = V3D_SCREEN_5551;
+      s->rb_swap = rgb;			/* RGBA5551 has R in the bottom bits: TBGR's */
+    }
+  else
+    return -V3D_EINVAL;
+  if (flags & 1)			/* (teletext, non-graphics modes) */
+    return -V3D_EINVAL;
+  s->stride = (uint32_t) v[3];
+  s->width = (uint32_t) v[4] + 1;
+  s->height = (uint32_t) v[5] + 1;
+  regs g = {{ 0, 0, 0, 0, 9u, 0, 0, 0, 0, GRAPHICSV }};	/* driver 0, head 0 */
+  if (swix_regs (OS_CallAVector, &g) || g.r[4] != 0)
+    return -V3D_EINVAL;
+  s->fs_pa = g.r[0];
+  s->fs_bytes = g.r[1];
+  uint64_t pa = plat_virt_pa ((uintptr_t) (uint32_t) v[6]);
+  if (!pa || pa < s->fs_pa || pa - s->fs_pa >= s->fs_bytes)
+    return -V3D_EINVAL;
+  s->off = (uint32_t) (pa - s->fs_pa);
+  regs da = {{ 2, 2 }};			/* the screen's area: bit 5, not cacheable */
+  s->cached = swix_regs (OS_DynamicArea, &da) || !(da.r[4] & (1u << 5));
+  return 0;
+}
+
 void
 twod_init (struct v3d_dev *dev, void *pw)
 {
   v3d = dev;
+  dev->present_screen = present_screen;	/* (0.31) */
   twod.pw = pw;
   twod.fills = 1;
   twod_limits (0, 0);
@@ -501,6 +557,7 @@ twod_files_closed (void)
   if (!v3d)
     return;
   v3d->twod.file = -1;
+  v3d_present_files_closed (v3d);	/* (0.31) PRESENT's too */
   v3d->twod.cl_cpu = 0;
   v3d->twod.scr_handle = 0;
   v3d->twod.pending = 0;

@@ -130,6 +130,46 @@ struct drm_riscos_file_stats
 #define DRM_IOCTL_RISCOS_FILE_STATS \
   _IOC (_IOC_READ, DRM_RISCOS_BASE, 0x03, sizeof (struct drm_riscos_file_stats))
 
+/* (0.31) DRM_IOCTL_RISCOS_PRESENT: copy a program's finished frame (a BO)
+   to the screen on the GPU, as a render job on the program's queue: EGL's
+   swap for a window on the RISC OS desktop. rects: rect_count of
+   struct drm_riscos_present_rect, in screen pixels from the top left, each
+   with where in the source it comes from; each is clipped to the screen
+   and to the source. The screen is read afresh each call: the current
+   mode and the bank the VDU writes to (OS_Byte 112). Taken screens:
+   32bpp (TBGR or TRGB, alpha or not; the top byte is written FF), 16bpp
+   5:6:5 and 1:5:5:5 (TBGR or TRGB); others -EINVAL. Sources: the fourccs
+   below, raster (uif_height_or_stride: bytes a row) or UIF
+   (DRM_RISCOS_PRESENT_SRC_UIF; uif_height_or_stride: the image's padded
+   height in pixels, as Mesa's slice; _SRC_UIF_XOR for the XOR form).
+   rect_count 0 checks the screen (and the source, if handle isn't 0)
+   without drawing. Runs after in_sync (0: none) and after earlier jobs
+   on the source; out_sync (0: none) is signalled when it has finished.
+   DRM_RISCOS_PRESENT_VSYNC isn't offered: -EOPNOTSUPP. -EBUSY: the CPU
+   caches the screen just now; copy it with the CPU this time. -ENOTTY:
+   not offered (EGL falls back). */
+struct drm_riscos_present_rect { __s32 dst_x, dst_y, width, height, src_x, src_y; };
+struct drm_riscos_present
+{
+  __u32 handle, format, flags;
+  __u32 width, height;			/* the source's, pixels */
+  __u32 uif_height_or_stride;
+  __u32 rect_count, pad;
+  __u64 rects;
+  __u32 in_sync, out_sync;
+};
+#define DRM_RISCOS_PRESENT_SRC_UIF 1u
+#define DRM_RISCOS_PRESENT_VSYNC 2u
+#define DRM_RISCOS_PRESENT_SRC_UIF_XOR 4u
+#define DRM_RISCOS_PRESENT_MAX_RECTS 256u
+#define DRM_FORMAT_ARGB8888 0x34325241u	/* 'AR24': B, G, R, A bytes */
+#define DRM_FORMAT_XRGB8888 0x34325258u	/* 'XR24' */
+#define DRM_FORMAT_ABGR8888 0x34324241u	/* 'AB24': R, G, B, A bytes */
+#define DRM_FORMAT_XBGR8888 0x34324258u	/* 'XB24' */
+#define DRM_FORMAT_RGB565 0x36314752u	/* 'RG16': R in the top 5 bits */
+#define DRM_IOCTL_RISCOS_PRESENT \
+  _IOC (_IOC_WRITE, DRM_RISCOS_BASE, 0x04, sizeof (struct drm_riscos_present))
+
 /* V3DRender's clock for absolute timeouts (drm_syncobj_wait): nanoseconds
    since the machine started, counted as OS_ReadMonotonicTime * 10,000,000.
    INT64_MAX waits for ever. */

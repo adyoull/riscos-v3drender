@@ -112,5 +112,43 @@ fill("fill-300x200.bin", 300, 200, 7680, 7680 * 500 + 40, 0x00FF8040)
 run("copy-200x100.bin", 200, 100, 4, 7680, 10 * 7680 + 40, 300 * 7680 + 800, 0)
 run("scroll-130x70.bin", 130, 70, 4, 7680, 0, 7680 * 20 + 32, 3)
 run("copy16-100x64.bin", 100, 64, 2, 3840, 0, 3840 * 300, 0)
+
+def present(name, w, h, src, dst, load, store):
+    """(0.31) PRESENT's lists: one frame, each tile loaded from the source
+    with its own General word and stored to the screen with another"""
+    rcl = decode(open(os.path.join(d, name), "rb").read())
+    c = rcl[0][1]
+    check(c["Image Width (pixels)"] == w and c["Image Height (pixels)"] == h, "%s: frame" % name)
+    tx, ty = (w + 63) // 64, (h + 63) // 64
+    body = rcl[7:]
+    check(len(body) == tx * ty * 5 + 1 and body[-1][0] == "End of rendering", "%s: body length" % name)
+    for i in range(tx * ty):
+        t = body[i * 5:i * 5 + 5]
+        check([x for x, _, _ in t] == ["Tile Coordinates", "Load Tile Buffer General", "End of Loads",
+                                       "Store Tile Buffer General", "End of Tile Marker"],
+              "%s: tile %d packets" % (name, i))
+        co, ld, st = t[0][1], t[1][1], t[3][1]
+        check((co["tile row number"], co["tile column number"]) == divmod(i, tx), "%s: tile %d" % (name, i))
+        check(ld["Address"] == src and ld["Buffer to Load"] == 0 and ld["Height"] == 0 and ld["Flip Y"] == 0
+              and ld["Channel Reverse"] == 0 and all(ld[k] == v for k, v in load.items()),
+              "%s: load %s" % (name, ld))
+        check(st["Address"] == dst and st["Buffer to Store"] == 0 and st["Height"] == 0 and st["Dither Mode"] == 0
+              and st["Clear buffer being stored"] == 0 and all(st[k] == v for k, v in store.items()),
+              "%s: store %s" % (name, st))
+
+
+for ln in open(os.path.join(d, "present")):
+    kind, a, b, w, h = ln.split()
+    a, b, w, h = int(a), int(b), int(w), int(h)
+    if kind == "5551":   # ARGB8888 raster onto a 1:5:5:5 TRGB screen
+        present("present-5551.bin", w, h, a, b,
+                {"Memory Format": 0, "Input Image Format": 27, "R/B swap": 1, "Force alpha 1": 1,
+                 "Height in UB or Stride": 1216},
+                {"Memory Format": 0, "Output Image Format": 45, "R/B swap": 1, "Height in UB or Stride": 1280})
+    else:                # a UIF frame (padded to 72 rows: 9 blocks) untiled to the staging buffer
+        present("present-uif.bin", w, h, a, b,
+                {"Memory Format": 4, "Input Image Format": 27, "R/B swap": 0, "Force alpha 1": 1,
+                 "Height in UB or Stride": 9},
+                {"Memory Format": 0, "Output Image Format": 27, "R/B swap": 0, "Height in UB or Stride": 400})
 print("cl2d: %s" % ("all ok" if not fails else "%d failed" % fails))
 sys.exit(1 if fails else 0)

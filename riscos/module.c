@@ -41,7 +41,7 @@
 #include "plat_pi4.h"
 #include "twod.h"
 
-#define VERSION 30		/* 0.30 */
+#define VERSION 31		/* 0.31 */
 #define SWI_BASE 0x5AFC0
 #ifndef OS_SetVarVal
 #define OS_SetVarVal		0x24
@@ -396,7 +396,7 @@ file_close (int f)
 {
   v3d_close (dev, f);
   for (int i = 0; i < V3D_MAX_FILES; i++)
-    if (dev->files[i].used && i != dev->twod.file)
+    if (dev->files[i].used && !v3d_internal_file (dev, i))
       return;
   if (clock_raised && clock_before && v3d_idle (dev))
     {
@@ -419,7 +419,7 @@ recover (int all, int report)
       for (int f = 0; f < V3D_MAX_FILES; f++)
 	if (dev->files[f].used)
 	  {
-	    closed += f != dev->twod.file;
+	    closed += !v3d_internal_file (dev, f);
 	    file_close (f);
 	  }
       twod_files_closed ();		/* (0.17) its own file again */
@@ -570,7 +570,7 @@ mod_swi (unsigned number, regs *r)
 	pi4_clock (&hz, 0);
 	int n = 0;
 	for (int i = 0; i < V3D_MAX_FILES; i++)
-	  n += dev->files[i].used && i != dev->twod.file;
+	  n += dev->files[i].used && !v3d_internal_file (dev, i);
 	r->r[0] = VERSION;
 	r->r[1] = (unsigned) dev->ver;
 	r->r[2] = dev->ident[1];
@@ -1298,7 +1298,7 @@ mod_command (int index, const char *tail, int argc)
 	{
 	  int open = 0;
 	  for (int i = 0; i < V3D_MAX_FILES; i++)
-	    open += dev->files[i].used && i != dev->twod.file;
+	    open += dev->files[i].used && !v3d_internal_file (dev, i);
 	  if (open || !v3d_idle (dev))
 	    {
 	      write0 ("The GPU is in use: close the programs using it first.");
@@ -1446,7 +1446,7 @@ mod_command (int index, const char *tail, int argc)
   newline ();
   int n = 0;
   for (int i = 0; i < V3D_MAX_FILES; i++)
-    n += dev->files[i].used && i != dev->twod.file;
+    n += dev->files[i].used && !v3d_internal_file (dev, i);
   line ("Files open:            ", (unsigned) n);
   line ("Bin jobs:              ", s->jobs[V3D_BIN]);
   line ("Render jobs:           ", s->jobs[V3D_RENDER]);
@@ -1605,6 +1605,34 @@ mod_command (int index, const char *tail, int argc)
       write_dec ((uint32_t) (s->zero_ns / 1000u / s->bo_creates));
       write0 (")");
       newline ();
+    }
+  /* (0.31) DRM_IOCTL_RISCOS_PRESENT */
+  const struct v3d_present *pr = &dev->present;
+  if (pr->presents || pr->probes || pr->refused)
+    {
+      write0 ("Presents:              ");
+      write_dec (pr->presents);
+      write0 (" (");
+      write_dec (pr->rects);
+      write0 (" rectangles, ");
+      write_dec (pr->jobs);
+      write0 (" jobs, ");
+      write_dec (pr->untiled);
+      write0 (" UIF frames untiled); ");
+      write_dec (pr->probes);
+      write0 (" checks");
+      newline ();
+      if (pr->clipped_away)
+	line ("  rectangles off screen:", pr->clipped_away);
+      if (pr->refused)
+	{
+	  write0 ("  refused:            ");
+	  write_dec (pr->refused);
+	  write0 (" (last error ");
+	  write_dec (pr->last_error);
+	  write0 (")");
+	  newline ();
+	}
     }
   if (s->page_moves)
     {

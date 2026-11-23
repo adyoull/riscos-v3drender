@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.31: DRM_IOCTL_RISCOS_PRESENT, EGL's swap on the GPU (23 November 2026)
+
+Asked for by MESA (EGL's window swap) and agreed by RISC3D: the GPU copies a program's finished frame to the screen, instead of EGL plotting a sprite with the CPU.
+
+- **The ioctl:** `DRM_IOCTL_RISCOS_PRESENT`, `'R'` nr 4, `_IOC_WRITE`, 48 bytes. The struct is MESA's suggestion, with the padding before `rects` made explicit (`pad`, must be 0), and a third flag, `SRC_UIF_XOR`. In `include/drm/drm.h`; described in docs/INTERFACE.md.
+- **Rectangles:**
+  - Up to 256 a call, in screen pixels from the top left, each with its source pixel.
+  - Each is clipped to the screen and to the source.
+  - Each becomes one render job of 64x64 tiles: each tile is loaded from the source and stored to the screen, with no shaders and no binning, as the desktop's copies are. A frame too big for one list is split into bands of tile rows, each a job with the whole frame's header.
+- **Formats:**
+  - Sources: ABGR/XBGR8888 and ARGB/XRGB8888, raster or UIF (Mesa's tiled layout, plain or XOR); RGB565.
+  - Screens: 32bpp TBGR/TRGB (alpha or not); 16bpp 5:6:5 (ModeFlags bit 7) and 1:5:5:5, each TBGR/TRGB.
+  - The conversion is done by the load's and the store's own formats and R/B swaps. Alpha is forced to 1.
+  - Other screens: -EINVAL.
+- **UIF sources** can only be loaded from their start. So a UIF frame is first untiled whole into a raster staging buffer (kept, grown in MB), and the rectangles are copied from there.
+- **The screen is read each call:**
+  - the mode from the VDU variables;
+  - the framestore from GraphicsV 9;
+  - where the VDU writes from VDU variable 148, turned into a physical address with OS_Memory 65, so the bank OS_Byte 112 chose is followed.
+  - A screen the CPU caches gives -EBUSY.
+- **Ordering:**
+  - The jobs go on the calling program's render queue, after its earlier jobs on the source (implicit) and after `in_sync`. `out_sync` is signalled when the last one finishes.
+  - All rectangles clipped away: `out_sync` is signalled at once.
+- **Other answers:**
+  - `rect_count` 0 checks the screen (and the source, given a handle) without drawing.
+  - `VSYNC`: -EOPNOTSUPP. It couldn't be done without waiting; EGL uses OS_Byte 19 itself.
+  - -ENOTTY where it isn't offered.
+- **Independent of desktop 2D:**
+  - PRESENT has its own internal file: its lists (256 KB in four parts, each part reused once its last job has finished), its own mapping of the framestore (remapped when the framestore moves) and the staging buffer.
+  - It's closed with the last program.
+  - Internal files are no longer counted as programs anywhere: open files, `*V3DPower`, 2D's "program open" rule, and the pool.
+- **The core:** `v3d_submit_render` (a render job from the core, with BOs by index) and `v3d_present_rcl` (v3d_2d.c, the per-tile list with separate load and store words).
+- **`*V3DRender`** shows a "Presents:" line: rectangles, jobs, UIF frames untiled, checks, rectangles off the screen, and refusals with the last error.
+- **Tests:**
+  - Host 5268. The lists are carried out as the GPU would (formats, raster and UIF layouts, swaps, alpha) into a stand-in screen, and compared with one drawn pixel by pixel. Covered:
+    - partial, off-screen and over-the-edge rectangles;
+    - a second bank;
+    - ARGB onto TRGB, XBGR onto TRGB, RGB565 onto 5:6:5 both orders, and onto 1:5:5:5 both orders;
+    - a 100x70 UIF frame;
+    - the errors, `out_sync` and `in_sync` ordering, the parts of the list buffer, a framestore move, and the file closed with the last program.
+  - cl2d.py checks a 1:5:5:5 present list and a UIF untiling list against Mesa's packet XML (formats 45 and 27, memory format 4, height 9 UIF blocks, R/B swap, alpha 1).
+  - Emulator 92557, through the module: the screen read from the VDU variables, GraphicsV 9 and OS_Memory 65, with the jobs started. Covered:
+    - 32bpp, 5:6:5 and 1:5:5:5 TRGB;
+    - 4K colours and 8bpp refused;
+    - VSYNC, a cached screen, the VDU outside the framestore and a bad handle;
+    - the status line;
+    - no file left open.
+- **Not checked on the Pi yet.** 16bpp UIF follows the same rule as 32bpp but has no model in the tests.
+- **Kit 34:** as kit 33, needing 0.31.
+
 ## 0.30: the 128 MB area clamp; BO and handle tables that grow; refused buffers counted (23 November 2026)
 
 From RISC3D, passing on David Sharp's ports (ioquake3, Mupen64Plus, dhewm3) on a Pi 4 with RISC OS 5.30 and V3DRender 0.26. Both claims checked against the code first.

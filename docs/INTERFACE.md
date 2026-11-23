@@ -153,6 +153,64 @@ statistics:
 A program that compares its GPU time with its frame time sees whether it
 is waiting for the GPU or the GPU for it.
 
+## Presenting a frame to the screen (0.31)
+
+**`DRM_IOCTL_RISCOS_PRESENT`** (`'R'`, nr 4, write only,
+`_IOC(_IOC_WRITE, 'R', 0x04, 48)`): the GPU copies a program's finished
+frame (a BO) to the screen. This is EGL's swap for a window on the RISC OS
+desktop.
+
+```c
+struct drm_riscos_present_rect { __s32 dst_x, dst_y, width, height, src_x, src_y; };
+struct drm_riscos_present
+{
+  __u32 handle, format, flags;
+  __u32 width, height;            /* the source's, pixels */
+  __u32 uif_height_or_stride;
+  __u32 rect_count, pad;          /* pad: 0 */
+  __u64 rects;                    /* rect_count rectangles, at most 256 */
+  __u32 in_sync, out_sync;        /* sync objects, 0: none */
+};
+#define DRM_RISCOS_PRESENT_SRC_UIF     1u
+#define DRM_RISCOS_PRESENT_VSYNC       2u
+#define DRM_RISCOS_PRESENT_SRC_UIF_XOR 4u
+```
+
+- **Rectangles:**
+  - In screen pixels from the top left. Each has the source pixel it starts from.
+  - Each is clipped to the screen and to the source. Parts outside either are left alone.
+- **Source:** the BO `handle` and a `format`:
+  - `DRM_FORMAT_ABGR8888` or `XBGR8888` (bytes R, G, B, A);
+  - `ARGB8888` or `XRGB8888` (bytes B, G, R, A);
+  - `RGB565` (R in the top 5 bits).
+- **Source layout:**
+  - Raster: `uif_height_or_stride` is bytes a row.
+  - UIF, with `SRC_UIF`, or `SRC_UIF_XOR` for the XOR form: `uif_height_or_stride` is the padded height in pixels (Mesa's slice `padded_height`, a multiple of 8). It is given to the GPU in UIF blocks (8 rows). The whole image is untiled into a raster staging buffer first, then the rectangles are copied from there.
+  - 32bpp UIF is checked against a model of the layout in the host test. 16bpp UIF (RGB565) follows the same rule, but no model checks it yet; the first Pi test will show whether it's right.
+- **Alpha:** always taken as 1. In 32bpp modes the top byte is written as FF.
+- **Screen:** read afresh on each call:
+  - the current mode (VDU variables);
+  - the framestore (GraphicsV 9);
+  - where the VDU writes now (VDU variable 148, so the bank OS_Byte 112 chose).
+- **Screens taken:**
+  - 32bpp TBGR or TRGB, with or without alpha;
+  - 16bpp 5:6:5 (C64K) and 1:5:5:5 (C32K), TBGR or TRGB.
+  - Any other screen (4K colours, 8bpp and below, 24bpp packed, YCbCr): `-EINVAL`.
+- **Order:**
+  - The jobs go on the calling program's render queue.
+  - They run after the program's earlier jobs that used the source BO, and after `in_sync`.
+  - `out_sync` is signalled when the last of them has finished.
+  - When every rectangle is clipped away, nothing is drawn and `out_sync` is signalled at once.
+- **Independent of desktop 2D.** `*V3DRender 2D` and RISC3D's switch don't affect it.
+- **Return values:**
+  - `rect_count` 0 checks the screen (and the source, if `handle` isn't 0) without drawing: 0 if a present would be taken.
+  - `-EOPNOTSUPP`: `VSYNC` was set. V3DRender can't present on vertical sync without waiting, so it doesn't offer it.
+  - `-EBUSY`: the CPU caches the screen just now. Copy it with the CPU this time.
+  - `-EINVAL`: the screen, source, format, flags or a size isn't taken.
+  - `-ENOENT`: no such BO.
+  - `-ENOTTY`: not offered (an older V3DRender, or none). EGL falls back to its own copy.
+- **Statistics:** `*V3DRender` shows presents, rectangles, jobs, UIF frames untiled, checks and refusals.
+
 ## Memory layout (0.13)
 
 As Linux, BOs of 1 MB or more get a 1 MB-aligned GPU address and BOs of
