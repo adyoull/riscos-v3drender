@@ -526,7 +526,7 @@ def main():
 
     out, e = mod.swi(0)
     check(e is None and out[1] == 42 and out[2] == 0x000E1124, "V3DRender_Info")
-    check(out[0] == 32 and out[8] != 0, "version 0.32, statistics in r8")
+    check(out[0] == 33 and out[8] != 0, "version 0.33, statistics in r8")
     check(struct.unpack("<I", data[0x1C:0x20])[0] == 0x5AFC0, "(0.16) the allocated SWI chunk, &5AFC0")
     stats_addr = out[8]
 
@@ -1469,7 +1469,9 @@ def test_027_log_and_options(data):
     check(any(l.startswith("options: NoWFI Size 256 MB; 2048 MB of RAM") for l in lines),
           "(0.27) the options and RAM in the log")
     check(any(l.startswith("HAL_IRQClear at &") for l in lines), "(0.27) HAL_IRQClear's address")
-    check(m.ftypes.get("$.V3DLog") == 0xFFF and log.splitlines()[0].split(" cs  ")[1].startswith("V3DRender 0.32: "),
+    check("registering with RISC3D" in lines and "registered with RISC3D" in lines,
+          "(0.33) the registration in the log")
+    check(m.ftypes.get("$.V3DLog") == 0xFFF and log.splitlines()[0].split(" cs  ")[1].startswith("V3DRender 0.33: "),
           "(0.27) a text file, each line timed and versioned")
     # the first interrupt, noted from a callback
     m.finish(R["INT_FRDONE"])
@@ -1478,6 +1480,16 @@ def test_027_log_and_options(data):
     run_callbacks(m)
     log = m.files["$.V3DLog"].decode("latin-1")
     check(log.count("first GPU interrupt") == 1, "(0.27) the first interrupt noted, once")
+    # (0.33) later events, each logged the first time only
+    mod.swi(1, {0: 0})
+    mod.swi(1, {0: 0})
+    m.call(mod.base + mod.service, {1: 0x4D, 12: m.pw})
+    m.call(mod.base + mod.service, {1: 0x46, 12: m.pw})
+    m.call(mod.base + mod.service, {1: 0x46, 12: m.pw})
+    log = m.files["$.V3DLog"].decode("latin-1")
+    check(log.count("first program opening the GPU") == 1 and log.count("first mode change starting") == 1
+          and log.count("first mode change done") == 1,
+          "(0.33) later events logged once each:\n%s" % log[-400:])
     n = len(log.splitlines())
     mod.finalise(0)
     log = m.files["$.V3DLog"].decode("latin-1")
@@ -1494,6 +1506,23 @@ def test_027_log_and_options(data):
     check(err is not None and lines[-3] == "5 memory" and lines[-2].startswith("failed: &")
           and lines[-1] == "final (fatal)",
           "(0.27) the failure and its error in the log: %s" % lines[-3:])
+
+    # (0.33) V3DRender$Options when RMLoad gives none (RISC3D's !Boot)
+    m = Pi4()
+    m.vars = {"V3DRender$Options": "NoIRQ NoRISC3D LowMem Log RAM::RamDisc0.$.Boot"}
+    mod = Module(m, data, 0x20010000)
+    err = initialise(mod, "")
+    lines = [l.split(": ", 1)[1] for l in m.files.get("RAM::RamDisc0.$.Boot", b"").decode("latin-1").splitlines()]
+    check(err is None and any(l.startswith("options: NoIRQ NoRISC3D LowMem Size 256 MB") for l in lines)
+          and m.vector is None and not getattr(m, "risc3d", None),
+          "(0.33) V3DRender$Options used with no command tail: %s" % lines[:3])
+    mod.finalise(0)
+    m = Pi4()
+    m.vars = {"V3DRender$Options": "NoIRQ"}
+    mod = Module(m, data, 0x20010000)
+    check(initialise(mod, "NoWFI") is None and m.vector is not None,
+          "(0.33) the command tail wins over V3DRender$Options")
+    mod.finalise(0)
 
     # no log asked for: no file
     m = Pi4()

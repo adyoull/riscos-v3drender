@@ -41,7 +41,7 @@
 #include "plat_pi4.h"
 #include "twod.h"
 
-#define VERSION 32		/* 0.32 */
+#define VERSION 33		/* 0.33 */
 #define SWI_BASE 0x5AFC0
 #ifndef OS_SetVarVal
 #define OS_SetVarVal		0x24
@@ -78,6 +78,20 @@ static char log_path[200];
 static int no_irq, no_risc3d;			/* (0.27) NoIRQ, NoRISC3D */
 static volatile int first_irq, first_irq_due;
 static void log_text (const char *text);
+static char *put_str (char *b, char *end, const char *s);
+static char *put_dec (char *b, char *end, uint32_t v);
+/* (0.33) after start-up, each kind of event is logged the first time it
+   happens, so a machine that stops later in its boot (Chris Hughes's CM4)
+   shows how far it got; never in page-moving service calls */
+static uint32_t logged_once;
+static void
+log_once (uint32_t bit, const char *text)
+{
+  if (logged_once & bit)
+    return;
+  logged_once |= bit;
+  log_text (text);
+}
 static uint32_t div32 (uint32_t a, uint32_t b);
 
 /* (0.26) the driver's memory work that couldn't be done inside a
@@ -359,7 +373,9 @@ register_risc3d (void)
   /* flags: bit 0 a DRM device; (0.20) bit 3 answers reason 4, hardware */
   regs r = {{ 0, (unsigned) driver_entry, 0, (unsigned) "V3DRender (the Pi 4's GPU)",
 	      1 | 8 | 16, SWI_BASE + 3, (unsigned) "v3d" }};
+  log_once (1u << 0, "registering with RISC3D");
   registered = !swix_regs (risc3d_register, &r);
+  log_once (1u << 1, registered ? "registered with RISC3D" : "RISC3D refused the registration");
 }
 
 static void
@@ -375,6 +391,7 @@ deregister_risc3d (void)
 static oserror *
 file_open (unsigned *handle)
 {
+  log_once (1u << 6, "first program opening the GPU");
   v3d_service (dev);
   int f = v3d_open (dev, this_task ());
   if (f < 0)
@@ -469,6 +486,14 @@ desktop_2d (int mode)
 oserror *
 driver_call (regs *r)
 {
+  if (r->r[0] < 8)
+    {
+      char buf[48], *b = buf, *end = buf + sizeof buf - 1;
+      b = put_str (b, end, "RISC3D's first call, reason ");
+      b = put_dec (b, end, r->r[0]);
+      *b = 0;
+      log_once (1u << (8 + r->r[0]), buf);
+    }
   switch (r->r[0])
     {
     case 0:
@@ -639,6 +664,7 @@ mod_service (regs *r)
   switch (r->r[1])
     {
     case 0x53:				/* Service_WimpCloseDown: r2 = task */
+      log_once (1u << 2, "first Service_WimpCloseDown");
       for (int f = 0; f < V3D_MAX_FILES; f++)
 	if (dev->files[f].used && dev->files[f].owner && dev->files[f].owner == r->r[2])
 	  file_close (f);
@@ -663,10 +689,12 @@ mod_service (regs *r)
       in64 = 0;
       break;
     case 0x4D:				/* Service_PreModeChange (0.17) */
+      log_once (1u << 3, "first mode change starting");
       twod_mode_changing ();
       break;
     case 0x46:				/* Service_ModeChange */
       twod_mode_changed ();
+      log_once (1u << 4, "first mode change done");
       break;
     case 0xDA:				/* Service_ModulePostInit: r2 -> title */
       {
@@ -676,6 +704,7 @@ mod_service (regs *r)
 	  i++;
 	if (t && !want[i] && t[i] < ' ')
 	  {
+	    log_once (1u << 5, "RISC3D loaded (again): registering");
 	    registered = 0;			/* a new RISC3D knows nothing of us */
 	    register_risc3d ();
 	  }
@@ -904,11 +933,28 @@ init (const char *tail, void *pw)
      NoWFI). For diagnosis: NoIRQ (the interrupt isn't claimed; waits
      poll the GPU), NoRISC3D (not registered with RISC3D), LowMem (no
      pages asked for above 1 GB), Log <file> (or V3DRender$Log). */
+  /* (0.33) no options given: V3DRender$Options, so the diagnostic
+     options can be had when RISC3D's !Boot loads V3DRender at start-up
+     (Chris Hughes's CM4 fails only then) */
+  static char opt_var[128];
+  int any = 0;
+  for (const char *t = tail; t && *t >= ' '; t++)
+    any |= *t > ' ';
+  if (!any)
+    {
+      regs r = {{ (unsigned) "V3DRender$Options", (unsigned) opt_var, sizeof opt_var - 1, 0, 3 }};
+      if (!swix_regs (OS_ReadVarVal, &r) && r.r[2] < sizeof opt_var)
+	{
+	  opt_var[r.r[2]] = 0;
+	  tail = opt_var;
+	}
+    }
   pi4_no_wfi = 0;
   pi4_low_mem = 0;
   pi4_poll = 0;
   no_irq = no_risc3d = 0;
   first_irq = first_irq_due = 0;
+  logged_once = 0;
   log_path[0] = 0;
   pi4_area_mb = 0;
   twod_wanted = TWOD_OFF;

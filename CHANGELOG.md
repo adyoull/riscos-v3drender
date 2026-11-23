@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.33: the start-up log and diagnostic options at boot (23 November 2026)
+
+Chris Hughes's CM4 Ne.X.T: V3DRender works when turned on from Configure's RISC3D window, and turns off cleanly, but the machine still stops ("trap while in trap handler") when V3DRender loads at boot. No log from it yet.
+
+- **`V3DRender$Options`:** read when V3DRender is loaded with no options, as RISC3D's !Boot loads it. So NoIRQ, NoRISC3D, LowMem, NoWFI, Size and Log can be given at boot. Options in the command tail still win.
+- **The log goes on past "ready":** after start-up, each of these is logged the first time it happens:
+  - registering with RISC3D, and its answer;
+  - RISC3D loaded again;
+  - RISC3D's first call for each reason;
+  - the first program opening the GPU;
+  - the first mode change (starting and done);
+  - the first Service_WimpCloseDown;
+  - the first GPU interrupt (as in 0.27).
+
+  Nothing is written from page-moving service calls. A machine that stops later in its boot now shows how far it got.
+- **Tests:** emulator 101832 (the variable used only with no command tail; the later events logged once each). Host 5271.
+- **Kit 36:** as kit 35, needing 0.33.
+
 ## 0.32: PRESENT's red and blue in 64K-colour modes (23 November 2026)
 
 From MESA's first Pi test of 0.31 (riscos-mesa `tests/presenttest.c`, owner's Pi 4):
